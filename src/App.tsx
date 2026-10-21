@@ -1,0 +1,963 @@
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { viewBook, type Book, type FactGroup, type Proof, type SourceSlide, type Story } from "./book";
+import { deckBlob } from "./deck";
+import { DEFAULT_OPTIONS, type DeckOptions } from "./options";
+import { emptyBook } from "./parse";
+import { slidesFor, SlideFrame, type SlideId } from "./slides";
+import { storyReadLines } from "./story";
+import { factReadLines } from "./facts";
+import { gridChartNote, gridProgress } from "./grid";
+import { rateOutlook, seriesProgressList, trackNote } from "./reading";
+import { markRequest } from "./mark";
+import { chartSentence, formatPoint, readSourceDeck, slideRead, sourceSummary } from "./sourceDeck";
+
+const W = 1280;
+const H = 720;
+
+type Held = { id: string; file: File };
+
+function clip(text: string): string {
+  return text.length > 4000 ? `${text.slice(0, 4000).trimEnd()}…` : text;
+}
+
+async function attachMark(book: Book): Promise<Book> {
+  if (!book.client || !markRequest(book.client)) return { ...book, logo: "" };
+  try {
+    const response = await fetch("/api/mark", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: book.client }),
+    });
+    if (!response.ok) return book;
+    const body = (await response.json()) as { dataUrl?: string };
+    return body.dataUrl ? { ...book, logo: body.dataUrl } : book;
+  } catch {
+    return book;
+  }
+}
+
+export function App() {
+  const [mode, setMode] = useState<"home" | "studio">("home");
+  const [files, setFiles] = useState<Held[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [busyLabel, setBusyLabel] = useState("Restyling");
+  const [book, setBook] = useState<Book>(emptyBook());
+  const [options, setOptions] = useState<DeckOptions>(DEFAULT_OPTIONS);
+  const [index, setIndex] = useState(0);
+  const [note, setNote] = useState("Drop a PowerPoint. Every slide is kept.");
+  const [understood, setUnderstood] = useState("");
+  const [issue, setIssue] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [deckName, setDeckName] = useState<string | null>(null);
+  const view = useMemo(() => viewBook(book), [book]);
+  const slides = useMemo(() => slidesFor(book), [book]);
+  const slide = slides[index] ?? slides[0];
+
+  useEffect(() => {
+    setIndex((current) => Math.min(current, Math.max(0, slides.length - 1)));
+  }, [slides.length]);
+
+  useEffect(() => {
+    if (mode !== "studio") return;
+    const onKey = (event: KeyboardEvent) => {
+      const tag = (event.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setIndex((current) => Math.min(slides.length - 1, current + 1));
+      }
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setIndex((current) => Math.max(0, current - 1));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [mode, slides.length]);
+
+  const patch = (partial: Partial<Book>) => setBook((current) => ({ ...current, ...partial }));
+
+  const restyle = async (file: File) => {
+    const lower = file.name.toLowerCase();
+    if (lower.endsWith(".ppt") && !lower.endsWith(".pptx")) {
+      setIssue(`${file.name} is an older PowerPoint file. Save it as .pptx.`);
+      return;
+    }
+    if (!lower.endsWith(".pptx")) {
+      setIssue("Add a PowerPoint. This only restyles a .pptx.");
+      return;
+    }
+    setBusy(true);
+    setBusyLabel("Restyling");
+    setIssue(null);
+    try {
+      const read = await readSourceDeck(await file.arrayBuffer(), file.name);
+      if (read.deck.slides.length === 0) {
+        setIssue(`${file.name} has no slides.`);
+        return;
+      }
+      const title = read.deck.title;
+      const next = await attachMark({
+        ...emptyBook(),
+        client: title,
+        sourceName: file.name,
+        sourceText: clip(read.text),
+        sourceDeck: { ...read.deck, title },
+      });
+      const pictures = read.deck.slides.reduce((total, item) => total + item.images.length, 0);
+      setBook(next);
+      setDeckName(file.name);
+      setFiles([{ id: `${file.name}:${file.size}`, file }]);
+      setNote([read.note, pictures ? `${pictures} ${pictures === 1 ? "picture stays" : "pictures stay"} on the slides.` : ""].filter(Boolean).join(" "));
+      setUnderstood(`${sourceSummary(next.sourceDeck ?? read.deck)}${next.logo ? ` The ${next.client} mark is on the cover.` : ""}`);
+      setIndex(0);
+      setMode("studio");
+    } catch (error) {
+      setIssue(error instanceof Error ? error.message : "Could not read that deck.");
+    } finally {
+      setBusy(false);
+      setBusyLabel("Restyling");
+    }
+  };
+
+  const addFiles = (list: File[]) => {
+    const file = list.find((item) => item.name.toLowerCase().endsWith(".pptx")) ?? list[0];
+    if (!file) return;
+    void restyle(file);
+  };
+
+  const downloadDeck = async () => {
+    setSaving(true);
+    setIssue(null);
+    try {
+      const { blob, fileName } = await deckBlob(book, options);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      link.click();
+      URL.revokeObjectURL(url);
+      setNote(`Saved ${fileName}.`);
+    } catch (error) {
+      setIssue(error instanceof Error ? error.message : "Could not write the PowerPoint.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (mode === "home" || !slide) {
+    return (
+      <Home
+        files={files}
+        addFiles={addFiles}
+        clearFile={() => setFiles([])}
+        issue={issue}
+        busy={busy}
+        busyLabel={busyLabel}
+      />
+    );
+  }
+
+  return (
+    <div className="app">
+      <header className="top">
+        <div className="brand">
+          <span className="mark" aria-hidden />
+          <strong>Studio</strong>
+        </div>
+        <div className="doc">
+          <small>Restyle</small>
+          <strong>{book.client || deckName || "Untitled deck"}</strong>
+        </div>
+        <div className="top-side">
+          <button type="button" className="ghost" onClick={() => { setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
+            New deck
+          </button>
+          <button type="button" className="download" aria-label="Download PowerPoint" onClick={() => void downloadDeck()} disabled={saving}>
+            {saving ? "Saving" : "Download"}
+          </button>
+          <p className="top-count">
+            {index + 1} / {slides.length}
+          </p>
+        </div>
+      </header>
+
+      <div className="workspace">
+        <nav className="rail" aria-label="Slides">
+          {slides.map((item, itemIndex) => (
+            <button
+              key={`${item.id}-${item.track ?? item.label}`}
+              type="button"
+              className={itemIndex === index ? "is-on" : ""}
+              aria-current={itemIndex === index ? "true" : undefined}
+              onClick={() => setIndex(itemIndex)}
+            >
+              <span>{itemIndex + 1}</span>
+              <span>
+                <b>{item.label}</b>
+                <small>{item.form}</small>
+              </span>
+            </button>
+          ))}
+        </nav>
+
+        <Stage
+          label={`Slide ${index + 1} of ${slides.length}, ${slide.label}. ${slide.form}.`}
+          caption={slide.label}
+          detail={slide.id === "mix" ? (options.mix === "columns" ? "Columns" : options.mix === "meter" ? "Meter" : "Donut") : slide.id === "listening" ? (options.listening === "columns" ? "Columns" : "Rows") : slide.form}
+          index={index}
+          count={slides.length}
+          onPrev={() => setIndex((current) => Math.max(0, current - 1))}
+          onNext={() => setIndex((current) => Math.min(slides.length - 1, current + 1))}
+        >
+          <SlideFrame book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
+        </Stage>
+
+        <aside className="panel">
+          <div className="panel-body">
+            <p className="panel-kicker">{slide.form}</p>
+            <h2>{slide.label}</h2>
+            <Look options={options} setOptions={setOptions} listening={false} mix={false} />
+            {understood && <p className="chart-note">{understood}</p>}
+            <Editor slideId={slide.id} trackIndex={slide.track ?? 0} book={book} rate={view.rate} peerRate={view.peerRate} patch={patch} />
+            {view.warnings.length > 0 && (slide.id === "book" || slide.id === "mix") && (
+              <ul className="warnings">
+                {view.warnings.map((warning) => (
+                  <li key={warning}>{warning}</li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div className="panel-sources">
+            <Drop
+              title="Replace the deck"
+              detail="PowerPoint only"
+              accept=".pptx,.ppt"
+              fileName={deckName}
+              onFile={(file) => void restyle(file)}
+            />
+            <p className="note" role="status">
+              {note}
+            </p>
+            {issue && <p className="issue">{issue}</p>}
+          </div>
+        </aside>
+      </div>
+    </div>
+  );
+}
+
+function panelNote(book: Book, slideId: SlideId, trackIndex: number): string {
+  if (slideId === "progress") {
+    if (book.grid) return gridProgress(book.grid)?.note ?? book.grid.note;
+    const cards = book.reading ? seriesProgressList(book.reading) : [];
+    if (cards.length === 0) return "Latest full month only.";
+    return cards
+      .map((card) => `${card.name} ${card.label}: ${card.contained.toLocaleString("en-US")} contained, ${card.rest.toLocaleString("en-US")} not contained.`)
+      .join(" ");
+  }
+  if (slideId === "outlook" && book.reading) {
+    const rows = book.reading.tracks.map((track) => rateOutlook(track)).filter((row) => row != null);
+    if (rows.length === 0) return "Not enough full months for a projection.";
+    return `${rows.map((row) => `${row.name} ${row.label} is ${row.rate}%.`).join(" ")} Projection is a straight line from the full months. It is not a result.`;
+  }
+  if (slideId === "grid" && book.grid) return gridChartNote(book.grid, trackIndex);
+  if (slideId === "read") {
+    const lines = book.facts ? factReadLines(book.facts) : book.story ? storyReadLines(book.story, book.period || book.story.period) : [];
+    return lines.join(" ");
+  }
+  return "";
+}
+
+function Editor({
+  slideId,
+  trackIndex,
+  book,
+  rate,
+  peerRate,
+  patch,
+}: {
+  slideId: SlideId;
+  trackIndex: number;
+  book: Book;
+  rate: number;
+  peerRate: number;
+  patch: (partial: Partial<Book>) => void;
+}) {
+  if (slideId === "origin" && book.sourceDeck) {
+    const source = book.sourceDeck.slides.find((item) => item.index === trackIndex) ?? book.sourceDeck.slides[0];
+    if (!source) return null;
+    const write = (partial: Partial<SourceSlide>) => {
+      const slides = book.sourceDeck!.slides.map((item) => (item.index === source.index ? { ...item, ...partial } : item));
+      const title = source.index === book.sourceDeck!.slides[0]?.index && partial.title != null
+        ? partial.title || book.sourceDeck!.title
+        : book.client;
+      patch({
+        client: title,
+        sourceDeck: { ...book.sourceDeck!, title: source.index === 1 ? (partial.title || book.sourceDeck!.title) : book.sourceDeck!.title, slides },
+      });
+    };
+    const chart = source.chart;
+    return (
+      <div className="breakdown">
+        <p className="chart-note">{slideRead(source)}</p>
+        <div className="fields">
+          <TextField label="Title" value={source.title} onChange={(title) => write({ title })} wide />
+          <label className="field is-wide">
+            <span>Context</span>
+            <textarea aria-label="Context" rows={4} value={source.context} onChange={(event) => write({ context: event.target.value })} placeholder="No other words on this slide." />
+          </label>
+        </div>
+        <div>
+          <p className="chart-note">Figures</p>
+          {source.numbers.length > 0 ? (
+            <ul className="num-chips">
+              {source.numbers.map((number, numberIndex) => (
+                <li key={`${number.display}-${numberIndex}`}>
+                  <b>{number.display}</b>
+                  {number.label && <span>{number.label}</span>}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="chart-note">No figure was written on this slide.</p>
+          )}
+        </div>
+        <div>
+          <p className="chart-note">Chart</p>
+          {chart ? (
+            <>
+              <p className="chart-note">{chartSentence(chart)}</p>
+              <ul className="point-list">
+                {chart.categories.slice(0, 8).map((category, index) => (
+                  <li key={`${category}-${index}`}>
+                    <span>{category}</span>
+                    <b>{chart.series.map((series) => formatPoint(series.values[index] ?? 0)).join(" · ")}</b>
+                  </li>
+                ))}
+              </ul>
+              {chart.categories.length > 8 && <p className="chart-note">First 8 of {chart.categories.length} points.</p>}
+            </>
+          ) : (
+            <p className="chart-note">{source.images.length ? "No chart data was stored. The picture stays on the slide." : "No chart was stored on this slide."}</p>
+          )}
+          {source.images.length > 0 && (
+            <p className="chart-note">{source.images.length} {source.images.length === 1 ? "picture stays" : "pictures stay"} on this slide.</p>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (slideId === "card" && book.outline) {
+    const card = book.outline.cards[trackIndex];
+    if (!card) return null;
+    const write = (partial: Partial<typeof card>) => {
+      const cards = book.outline!.cards.map((item, itemIndex) => (itemIndex === trackIndex ? { ...item, ...partial } : item));
+      patch({ outline: { ...book.outline!, cards } });
+    };
+    return (
+      <div className="fields">
+        <TextField label="Title" value={card.title} onChange={(title) => write({ title })} wide />
+        <label className="field is-wide">
+          <span>Point to mention</span>
+          <textarea aria-label="Point to mention" rows={5} value={card.hint} onChange={(event) => write({ hint: event.target.value })} />
+        </label>
+      </div>
+    );
+  }
+
+  if (slideId === "cover") {
+    return (
+      <div className="fields">
+        <TextField label="Client" value={book.client} onChange={(client) => patch({ client })} />
+        <TextField label="Market" value={book.market} onChange={(market) => patch({ market })} />
+        <TextField label="Period" value={book.period} onChange={(period) => patch({ period })} wide />
+        <label className="field is-wide">
+          <span>Brief</span>
+          <textarea aria-label="Brief" rows={5} value={book.brief} onChange={(event) => patch({ brief: event.target.value })} />
+        </label>
+      </div>
+    );
+  }
+
+  if (slideId === "book" || slideId === "mix") {
+    return (
+      <>
+        <p className="readout-line">
+          <b>{rate}%</b> of active subscribers
+        </p>
+        <div className="fields">
+          <NumberField label="Active subscribers" value={book.active} onChange={(active) => patch({ active })} />
+          <NumberField label="Claims" value={book.claims} onChange={(claims) => patch({ claims })} />
+          <NumberField label="Fulfilled" value={book.fulfilled} onChange={(fulfilled) => patch({ fulfilled })} />
+          <NumberField label="Approved" value={book.approved} onChange={(approved) => patch({ approved })} />
+        </div>
+      </>
+    );
+  }
+
+  if (slideId === "listening") {
+    return (
+      <p className="chart-note">
+        {book.listening.length} topics from the Listening sheet. Row length follows the largest count. Colour runs negative, neutral, positive. Health is the share that is not negative.
+      </p>
+    );
+  }
+
+  if (slideId === "journey") {
+    return (
+      <p className="chart-note">
+        {book.journey.length} stages from the Journey sheet. The percents are the sheet's own split, drawn out from the center line.
+      </p>
+    );
+  }
+
+  if (slideId === "months") {
+    return (
+      <p className="chart-note">
+        {book.months.length} months from the Months sheet. Each column is that month's claims. A book sheet on its own leaves this slide off.
+      </p>
+    );
+  }
+
+  if (slideId === "progress" || slideId === "outlook" || slideId === "grid" || slideId === "read") {
+    return <p className="chart-note">{panelNote(book, slideId, trackIndex)}</p>;
+  }
+
+  if ((slideId === "scope" || slideId === "track" || slideId === "compare") && book.reading) {
+    const track = book.reading.tracks[trackIndex];
+    return (
+      <p className="chart-note">
+        {slideId === "track" && track
+          ? trackNote(track)
+          : slideId === "scope"
+            ? `${book.reading.scope.length} populations from the brief: ${book.reading.scope.map((card) => card.label).join(", ")}.`
+            : "Each rate is that series alone. Calls and chats stay in their own totals."}
+      </p>
+    );
+  }
+
+  if (slideId === "facts" && book.facts) {
+    const facts = book.facts;
+    const group = facts.groups[trackIndex];
+    if (!group) return null;
+    const writeGroup = (partial: Partial<FactGroup>) => {
+      const groups = facts.groups.map((item, itemIndex) => (itemIndex === trackIndex ? { ...item, ...partial } : item));
+      patch({ facts: { ...facts, groups } });
+    };
+    return (
+      <div className="fields">
+        {group.volume && (
+          <>
+            <NumberField
+              label="Volume"
+              value={group.volume.value}
+              onChange={(value) => writeGroup({ volume: { ...group.volume!, value } })}
+            />
+            <TextField label="What was counted" value={group.volume.unit} onChange={(unit) => writeGroup({ volume: { ...group.volume!, unit, label: unit } })} />
+          </>
+        )}
+        {group.rates.map((rate, index) => (
+          <ProofFields
+            key={`${index}-${rate.label}`}
+            proof={{ label: rate.label, relation: rate.relation, value: rate.value }}
+            onChange={(partial) => {
+              const rates = group.rates.map((item, itemIndex) => (itemIndex === index ? { ...item, ...partial } : item));
+              writeGroup({ rates });
+            }}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  if (slideId === "result" && book.story) {
+    const story = book.story;
+    const setStory = (partial: Partial<Story>) => patch({ story: { ...story, ...partial } });
+    const setProof = (index: number, partial: Partial<Proof>) => {
+      const proofs = story.proofs.map((proof, proofIndex) => (proofIndex === index ? { ...proof, ...partial } : proof));
+      setStory({ proofs });
+    };
+    return (
+      <>
+        <div className="fields">
+          <NumberField
+            label="Volume"
+            value={story.volume ?? 0}
+            onChange={(volume) => setStory({ volume })}
+          />
+          <TextField label="What was counted" value={story.unit} onChange={(unit) => setStory({ unit })} />
+          {story.hedge ? <TextField label="As written" value={story.hedge} onChange={(hedge) => setStory({ hedge })} /> : null}
+          <TextField label="Verb" value={story.verb} onChange={(verb) => setStory({ verb })} />
+          {story.proofs.map((proof, index) => (
+            <ProofFields key={`${index}-${proof.label}`} proof={proof} onChange={(partial) => setProof(index, partial)} />
+          ))}
+        </div>
+      </>
+    );
+  }
+
+  if (slideId === "source") {
+    return (
+      <div className="fields">
+        <TextField label="Document" value={book.sourceName} onChange={(sourceName) => patch({ sourceName })} wide />
+        <label className="field is-wide">
+          <span>Decoded text</span>
+          <textarea
+            aria-label="Decoded text"
+            rows={10}
+            value={book.sourceText}
+            onChange={(event) => patch({ sourceText: event.target.value })}
+          />
+        </label>
+      </div>
+    );
+  }
+
+  if (slideId === "versus") {
+    return (
+      <>
+        <div className="readout">
+          <p>
+            <b>{rate}%</b>
+            <span>{book.client || "This book"}</span>
+          </p>
+          <p>
+            <b>{peerRate}%</b>
+            <span>{book.peerName || "Peer"}</span>
+          </p>
+        </div>
+        <div className="fields">
+          <TextField label="Peer" value={book.peerName} onChange={(peerName) => patch({ peerName })} wide />
+          <NumberField label="Peer active" value={book.peerActive} onChange={(peerActive) => patch({ peerActive })} />
+          <NumberField label="Peer claims" value={book.peerClaims} onChange={(peerClaims) => patch({ peerClaims })} />
+          <NumberField label="Peer fulfilled" value={book.peerFulfilled} onChange={(peerFulfilled) => patch({ peerFulfilled })} wide />
+        </div>
+      </>
+    );
+  }
+
+  return (
+    <label className="field is-wide">
+      <span>Recommendation</span>
+      <textarea
+        aria-label="Recommendation"
+        rows={8}
+        value={book.recommendation}
+        onChange={(event) => patch({ recommendation: event.target.value })}
+      />
+    </label>
+  );
+}
+
+function Stage({
+  children,
+  label,
+  caption,
+  detail,
+  index,
+  count,
+  onPrev,
+  onNext,
+}: {
+  children: ReactNode;
+  label: string;
+  caption: string;
+  detail: string;
+  index: number;
+  count: number;
+  onPrev: () => void;
+  onNext: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.45);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => {
+      const style = getComputedStyle(el);
+      const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
+      const width = el.clientWidth - padX;
+      const height = el.clientHeight - padY - 76;
+      const fromWidth = width / W;
+      const fromHeight = height / H;
+      const narrow = window.matchMedia("(max-width: 1080px)").matches;
+      const next = narrow ? fromWidth : Math.min(fromWidth, fromHeight);
+      setScale(next > 0.2 ? next : 0.2);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div className="stage-wrap" ref={ref}>
+      <div className="stage-stack">
+        <div className="fit" style={{ width: W * scale, height: H * scale }} role="img" aria-label={label}>
+          <div className="fit-inner" style={{ transform: `scale(${scale})` }}>
+            {children}
+          </div>
+        </div>
+        <div className="scrub">
+          <button type="button" aria-label="Previous slide" onClick={onPrev} disabled={index === 0}>
+            <Chevron />
+          </button>
+          <p>
+            {caption}
+            <span>{detail}</span>
+          </p>
+          <button type="button" aria-label="Next slide" onClick={onNext} disabled={index >= count - 1}>
+            <Chevron flip />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Chevron({ flip = false }: { flip?: boolean }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden style={flip ? { transform: "scaleX(-1)" } : undefined}>
+      <path d="M10 3.5 5.5 8 10 12.5" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function ProofFields({ proof, onChange }: { proof: Proof; onChange: (partial: Partial<Proof>) => void }) {
+  return (
+    <>
+      <TextField label="Mark" value={proof.label} onChange={(label) => onChange({ label })} />
+      <label className="field">
+        <span>How it was stated</span>
+        <select
+          aria-label={`${proof.label || "Mark"} comparison`}
+          value={proof.relation}
+          onChange={(event) => onChange({ relation: event.target.value as Proof["relation"] })}
+        >
+          <option value="above">Above</option>
+          <option value="below">Below</option>
+          <option value="least">At least</option>
+          <option value="exact">Exactly</option>
+        </select>
+      </label>
+      <NumberField label="Figure" value={proof.value} onChange={(value) => onChange({ value })} wide />
+    </>
+  );
+}
+
+function TextField({
+  label,
+  value,
+  onChange,
+  wide = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  wide?: boolean;
+}) {
+  return (
+    <label className={`field${wide ? " is-wide" : ""}`}>
+      <span>{label}</span>
+      <input aria-label={label} value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
+  );
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  wide = false,
+}: {
+  label: string;
+  value: number;
+  onChange: (value: number) => void;
+  wide?: boolean;
+}) {
+  const [focus, setFocus] = useState(false);
+  const [text, setText] = useState(String(value));
+  const shown = focus ? text : value.toLocaleString("en-US");
+  return (
+    <label className={`field${wide ? " is-wide" : ""}`}>
+      <span>{label}</span>
+      <input
+        aria-label={label}
+        inputMode="numeric"
+        value={shown}
+        onFocus={(event) => {
+          setFocus(true);
+          setText(String(value));
+          event.currentTarget.select();
+        }}
+        onBlur={() => setFocus(false)}
+        onChange={(event) => {
+          const raw = event.target.value.replace(/[^\d]/g, "");
+          setText(raw);
+          onChange(raw === "" ? 0 : Number(raw));
+        }}
+      />
+    </label>
+  );
+}
+
+function Drop({
+  title,
+  detail,
+  accept,
+  fileName,
+  onFile,
+}: {
+  title: string;
+  detail: string;
+  accept: string;
+  fileName: string | null;
+  onFile: (file: File) => void;
+}) {
+  const [over, setOver] = useState(false);
+  const take = (file: File | undefined) => {
+    if (file) onFile(file);
+  };
+  return (
+    <label
+      className={`drop${over ? " is-over" : ""}`}
+      onDragEnter={(event) => {
+        event.preventDefault();
+        setOver(true);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        setOver(true);
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setOver(false);
+        take(event.dataTransfer.files[0]);
+      }}
+    >
+      <input
+        type="file"
+        accept={accept}
+        onChange={(event) => {
+          take(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
+      <strong>{title}</strong>
+      <span>{fileName ?? detail}</span>
+    </label>
+  );
+}
+
+function Look({
+  options,
+  setOptions,
+  listening,
+  mix = true,
+}: {
+  options: DeckOptions;
+  setOptions: (update: (current: DeckOptions) => DeckOptions) => void;
+  listening: boolean;
+  mix?: boolean;
+}) {
+  return (
+    <div className="look">
+      <Choice
+        label="Type size"
+        value={options.type}
+        options={[
+          { value: "s", label: "Compact" },
+          { value: "m", label: "Regular" },
+          { value: "l", label: "Large" },
+        ]}
+        onChange={(type) => setOptions((current) => ({ ...current, type }))}
+      />
+      {mix && (
+        <Choice
+          label="Mix chart"
+          value={options.mix}
+          options={[
+            { value: "donut", label: "Donut" },
+            { value: "columns", label: "Columns" },
+            { value: "meter", label: "Meter" },
+          ]}
+          onChange={(mixChart) => setOptions((current) => ({ ...current, mix: mixChart }))}
+        />
+      )}
+      {listening && (
+        <Choice
+          label="Listening"
+          value={options.listening}
+          options={[
+            { value: "rows", label: "Rows" },
+            { value: "columns", label: "Columns" },
+          ]}
+          onChange={(listeningChart) => setOptions((current) => ({ ...current, listening: listeningChart }))}
+        />
+      )}
+    </div>
+  );
+}
+
+function Choice<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { value: T; label: string }[];
+  onChange: (value: T) => void;
+}) {
+  return (
+    <div className="choice" role="group" aria-label={label}>
+      <span>{label}</span>
+      <div>
+        {options.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={value === option.value ? "is-on" : ""}
+            aria-pressed={value === option.value}
+            onClick={() => onChange(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Home({
+  files,
+  addFiles,
+  clearFile,
+  issue,
+  busy,
+  busyLabel,
+}: {
+  files: Held[];
+  addFiles: (files: File[]) => void;
+  clearFile: () => void;
+  issue: string | null;
+  busy: boolean;
+  busyLabel: string;
+}) {
+  const [over, setOver] = useState(false);
+  return (
+    <div className="home">
+      <header className="home-bar">
+        <div className="brand">
+          <span className="mark" aria-hidden />
+          <strong>Studio</strong>
+        </div>
+      </header>
+      <main className="home-main">
+        <div className="home-lead">
+          <p className="home-kicker">Restyle</p>
+          <h1>
+            <span>Drop the deck.</span>
+            <span>Leave with a better one.</span>
+          </h1>
+          <p className="home-lede">
+            Upload a PowerPoint. Every slide stays. Pictures stay. A table of numbers is drawn as a chart, and the table stays on the slide.
+          </p>
+        </div>
+        <div className="home-aside">
+          <ol className="home-steps">
+            <li>
+              <b>01</b>
+              <span>
+                <strong>Upload the deck</strong>
+                <span>One PowerPoint. Nothing else is read.</span>
+              </span>
+            </li>
+            <li>
+              <b>02</b>
+              <span>
+                <strong>Keep the pictures</strong>
+                <span>A bar chart saved as an image stays. So does every other picture.</span>
+              </span>
+            </li>
+            <li>
+              <b>03</b>
+              <span>
+                <strong>Download</strong>
+                <span>The words stay. Figures and chart data become visuals.</span>
+              </span>
+            </li>
+          </ol>
+        </div>
+        <form
+          className="composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const file = files[0]?.file;
+            if (file) void addFiles([file]);
+          }}
+        >
+          <div className="composer-files">
+            <label
+              className={`lane${over ? " is-over" : ""}`}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setOver(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                setOver(true);
+              }}
+              onDragLeave={(event) => {
+                if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOver(false);
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setOver(false);
+                addFiles([...event.dataTransfer.files]);
+              }}
+            >
+              <input
+                type="file"
+                accept=".pptx,.ppt"
+                onChange={(event) => {
+                  addFiles([...(event.target.files ?? [])]);
+                  event.target.value = "";
+                }}
+              />
+              <strong>Drop a PowerPoint</strong>
+              <span>Every slide is kept. Pictures stay on the slide.</span>
+            </label>
+            {files.length > 0 && (
+              <ul className="held">
+                {files.map((item) => (
+                  <li key={item.id}>
+                    <span className="pill deck">PowerPoint</span>
+                    <b>{item.file.name}</b>
+                    <button type="button" aria-label={`Remove ${item.file.name}`} onClick={clearFile}>
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          {issue && <p className="home-issue">{issue}</p>}
+          <div className="composer-actions">
+            <button className="build" type="submit" disabled={busy || files.length === 0}>
+              {busy ? busyLabel : "Restyle the deck"}
+            </button>
+          </div>
+        </form>
+      </main>
+    </div>
+  );
+}

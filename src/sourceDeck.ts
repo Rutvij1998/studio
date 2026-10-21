@@ -1,0 +1,851 @@
+import JSZip from "jszip";
+import type { SourceChart, SourceDeck, SourceImage, SourceNumber, SourceSeries, SourceSlide, SourceTable } from "./book";
+import { chartFit, isTimeLabels } from "./fit";
+import { pictureFromModel } from "./seen";
+
+export type PresentKind = "cover" | "chart" | "numbers" | "prose" | "picture";
+
+const STOP = new Set([
+  "is", "are", "was", "were", "above", "below", "over", "under", "of", "the", "a", "an",
+  "at", "to", "and", "or", "for", "in", "on", "by", "than", "with", "from", "that", "this",
+  "we", "our", "be", "been",
+]);
+
+const VERB = new Set(["handled", "handle", "handling", "reached", "saw", "made", "took", "had", "has", "have", "posted", "recorded"]);
+
+const NUMBER_RE = /(?<![A-Za-z0-9])(?<currency>[$£€])?\s*(?<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*(?<unit>%|percent|pct|million|billion|thousand|mn|bn|m|k))?(?![A-Za-z])/gi;
+
+const decode = (value: string) =>
+  value
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'");
+
+export function isSource(book: { sourceDeck: SourceDeck | null; active: number; claims: number }): boolean {
+  return (book.sourceDeck?.slides.length ?? 0) > 0;
+}
+
+export function presentKind(slide: SourceSlide): PresentKind {
+  if (slide.chart && slide.chart.series.some((series) => series.values.length > 0)) return "chart";
+  if (slide.numbers.length > 0) return "numbers";
+  if (slide.picture) return "picture";
+  if (slide.index === 1 && slide.context.trim().length < 320) return "cover";
+  return "prose";
+}
+
+export function chartKindLabel(kind: SourceChart["kind"]): string {
+  if (kind === "columns") return "Columns";
+  if (kind === "bars") return "Bars";
+  if (kind === "line") return "Line";
+  if (kind === "stacked") return "Stacked";
+  if (kind === "funnel") return "Funnel";
+  return "Donut";
+}
+
+/** The short name on the slide. Year, month, and day lines say so. */
+export function chartKicker(chart: SourceChart): string {
+  if (chart.drawn.startsWith("Month over month")) return "Month over month";
+  if (chart.drawn.startsWith("Day over day")) return "Day over day";
+  if (chart.drawn.startsWith("Year over year")) return "Year over year";
+  if (chart.kind === "funnel") return "Funnel";
+  if (chart.kind === "donut") return "Donut";
+  if (chart.kind === "line") return "Line";
+  if (chart.kind === "bars") return "Bars";
+  if (chart.kind === "stacked") return "Stacked columns";
+  return "Columns";
+}
+
+export function formatPoint(value: number): string {
+  if (!Number.isFinite(value)) return "";
+  if (Math.abs(value - Math.round(value)) < 0.05) return Math.round(value).toLocaleString("en-US");
+  return value.toLocaleString("en-US", { maximumFractionDigits: 1 });
+}
+
+/** A round ceiling so the axis reads 100, 50, 0 rather than pinning the tallest bar to the top. */
+export function axisMax(max: number): number {
+  if (!Number.isFinite(max) || max <= 0) return 1;
+  const power = 10 ** Math.floor(Math.log10(max));
+  const unit = max / power;
+  const nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10;
+  return nice * power;
+}
+
+export function chartSentence(chart: SourceChart): string {
+  const names = chart.series.map((series) => series.name).filter(Boolean);
+  const named = names.length ? names.join(", ") : "the series";
+  const cats = chart.categories.filter(Boolean);
+  const head = cats.slice(0, 4).join(", ");
+  const more = cats.length > 4 ? `, and ${cats.length - 4} more` : "";
+  const drawn = chart.drawn ? ` ${chart.drawn}` : "";
+  if (chart.kind === "donut") {
+    const parts = cats.length ? cats.slice(0, 6).join(", ") : named;
+    return `Donut of ${parts}.${drawn}`;
+  }
+  if (chart.kind === "funnel") {
+    const parts = cats.length ? cats.slice(0, 6).join(", ") : named;
+    return `Funnel of ${parts}.${drawn}`;
+  }
+  const phrase = chart.kind === "stacked" ? "Stacked columns" : chartKindLabel(chart.kind);
+  const across = cats.length ? ` across ${head}${more}` : "";
+  return `${phrase} of ${named}${across}.${drawn}`;
+}
+
+export function sourceSummary(deck: SourceDeck): string {
+  return deck.intent;
+}
+
+/** One line for the open slide: where the file leads, then the charts and figures. */
+export function slideRead(slide: SourceSlide): string {
+  if (slide.chart) {
+    const beside = slide.table ? " The table stays beside the chart." : "";
+    return `${chartSentence(slide.chart)}${beside}`;
+  }
+  if (presentKind(slide) === "picture" || slide.images.length > 0) {
+    const count = slide.images.length;
+    return count
+      ? `${count} ${count === 1 ? "picture stays" : "pictures stay"} on this slide.`
+      : "This slide is a picture. No title, figure, or chart was stored as text.";
+  }
+  if (slide.numbers.length > 0) {
+    return slide.numbers.map((number) => (number.label ? `${number.label}: ${number.display}` : number.display)).join(". ") + ".";
+  }
+  if (!slide.title.trim() && !slide.context.trim()) return "This slide had no readable text.";
+  return "The words on this slide, kept as written.";
+}
+
+export function railLabel(slide: SourceSlide): string {
+  const title = slide.title.trim();
+  if (title) return title.length > 32 ? `${title.slice(0, 32).trimEnd()}…` : title;
+  const kind = presentKind(slide);
+  if (kind === "picture") return "Picture";
+  if (kind === "chart" && slide.chart) return chartKindLabel(slide.chart.kind);
+  if (kind === "numbers") return "Figures";
+  return `Slide ${slide.index}`;
+}
+
+export function formLabel(slide: SourceSlide): string {
+  const kind = presentKind(slide);
+  if (kind === "cover") return "Opens";
+  if (kind === "chart" && slide.chart) return chartKindLabel(slide.chart.kind);
+  if (kind === "numbers") return "Figures";
+  if (kind === "picture") return "Picture";
+  return "Context";
+}
+
+function intentOf(slides: SourceSlide[], title: string): string {
+  const charts = slides.filter((slide) => slide.chart).length;
+  const figures = slides.reduce((total, slide) => total + slide.numbers.length, 0);
+  const pictures = slides.filter((slide) => slide.images.length > 0 || presentKind(slide) === "picture").length;
+  const bits = [
+    `${slides.length} ${slides.length === 1 ? "slide" : "slides"}`,
+    `${charts} ${charts === 1 ? "chart" : "charts"}`,
+    `${figures} ${figures === 1 ? "figure" : "figures"}`,
+  ];
+  if (pictures) bits.push(`${pictures} ${pictures === 1 ? "picture" : "pictures"}`);
+  const lead = title || slides.find((slide) => slide.title.trim())?.title.trim() || "Untitled";
+  const next = slides
+    .map((slide) => slide.title.trim())
+    .filter((name) => name && name !== lead)
+    .slice(0, 3);
+  const tail = next.length ? ` Then ${next.join(", ")}.` : "";
+  return `Read ${bits.join(", ")}. Every slide is kept. Pictures stay on the slide. Charts are redrawn in the studio colors. A table of numbers is drawn as a chart, and the table stays. Lead: ${lead}.${tail}`;
+}
+
+export type SlideRole = "cover" | "chart" | "figures" | "pictures" | "bullets" | "prose";
+
+const CONTINUED = "Continued.";
+
+function contentLines(slide: SourceSlide): string[] {
+  return slide.context.split(/\n/).map((line) => line.trim()).filter((line) => line && line !== CONTINUED);
+}
+
+const BULLET_MARK = /^(?:[•●▪‣]|\d+[.)])\s+/;
+
+function markedBullets(lines: string[]): string[] {
+  return lines.filter((line) => /^[•●▪‣]\s+/.test(line)).map((line) => line.replace(BULLET_MARK, "").trim()).filter(Boolean);
+}
+
+/** A list stays a list. A long paragraph does not get split into fake bullets. */
+export function bulletLines(slide: SourceSlide): string[] {
+  if (slide.chart || slide.table) return [];
+  const lines = contentLines(slide);
+  const marked = markedBullets(lines);
+  if (marked.length >= 2) return marked;
+  const plain = lines.map((line) => line.replace(BULLET_MARK, "").trim()).filter(Boolean);
+  if (plain.length < 2 || plain.length > 12) return [];
+  if (plain.some((line) => line.length > 110)) return [];
+  return plain;
+}
+
+/** The sentence above a real list. A list with no lead returns nothing. */
+export function leadCopy(slide: SourceSlide): string {
+  const lines = contentLines(slide);
+  if (markedBullets(lines).length >= 2) return lines.filter((line) => !/^[•●▪‣]\s+/.test(line)).join("\n");
+  if (bulletLines(slide).length >= 2) return "";
+  return lines.join("\n");
+}
+
+export function isContinued(slide: SourceSlide): boolean {
+  return slide.context.split("\n")[0]?.trim() === CONTINUED;
+}
+
+/** The title slide is dark. Every later slide stays on white. */
+export function slideRole(slide: SourceSlide): SlideRole {
+  const kind = presentKind(slide);
+  if (slide.index === 1 && !slide.chart && slide.images.length === 0 && !slide.table) return "cover";
+  if (kind === "chart") return "chart";
+  if (kind === "numbers") return "figures";
+  if (bulletLines(slide).length >= 2) return "bullets";
+  if (kind === "picture" || slide.images.length > 0) return "pictures";
+  return "prose";
+}
+
+const DATE_TOKEN = /\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/;
+
+/** A trailing date on a title slide is the date line, not part of the title. */
+export function coverParts(slide: SourceSlide): { title: string; date: string; line: string } {
+  const titleMatch = slide.title.trim().match(new RegExp(`^(.*?)\\s+(${DATE_TOKEN.source})$`));
+  const title = (titleMatch ? titleMatch[1] : slide.title).trim() || "Untitled";
+  const context = slide.context.trim();
+  const contextDate = DATE_TOKEN.test(context) && context.length < 24 ? context : "";
+  return {
+    title,
+    date: titleMatch?.[2] ?? contextDate,
+    line: contextDate ? "" : context,
+  };
+}
+
+function fileTitle(fileName: string): string {
+  return fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80);
+}
+
+function attr(tag: string, name: string): string {
+  return tag.match(new RegExp(`\\b${name}="([^"]*)"`))?.[1] ?? "";
+}
+
+function resolvePath(fromFile: string, target: string): string {
+  if (target.startsWith("/")) return target.replace(/^\/+/, "");
+  const parts = fromFile.split("/").slice(0, -1);
+  for (const bit of target.split("/")) {
+    if (!bit || bit === ".") continue;
+    if (bit === "..") parts.pop();
+    else parts.push(bit);
+  }
+  return parts.join("/");
+}
+
+function bulletParagraph(block: string): boolean {
+  if (/<a:buNone\b/.test(block)) return false;
+  return /<a:bu(?:Char|AutoNum|Blip)\b/.test(block);
+}
+
+function textsOf(xml: string, breaks = true, markBullets = false): string {
+  const paragraphs = [...xml.matchAll(/<a:p\b[\s\S]*?<\/a:p>/g)];
+  const lineOf = (block: string) => {
+    const text = [...block.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((match) => decode(match[1] ?? "")).join("").replace(/[ \t]+/g, " ").trim();
+    if (!text) return "";
+    return markBullets && bulletParagraph(block) ? `• ${text}` : text;
+  };
+  if (!paragraphs.length) return lineOf(xml);
+  const lines = paragraphs.map((paragraph) => lineOf(paragraph[0])).filter(Boolean);
+  return lines.join(breaks ? "\n" : " ");
+}
+
+type Block = { role: "title" | "body"; text: string };
+
+function blocksOf(xml: string): Block[] {
+  const blocks: Block[] = [];
+  for (const match of xml.matchAll(/<p:sp\b[\s\S]*?<\/p:sp>/g)) {
+    const shape = match[0];
+    const role = attr(shape.match(/<p:ph\b[^>]*>/)?.[0] ?? "", "type");
+    if (role === "ftr" || role === "dt" || role === "sldNum" || role === "hdr") continue;
+    const text = textsOf(shape, true, true);
+    if (!text) continue;
+    const title = role === "title" || role === "ctrTitle";
+    blocks.push({ role: title ? "title" : "body", text });
+  }
+  return blocks;
+}
+
+function wordsOf(text: string): string[] {
+  return text.replace(/[.,:;|/]+/g, " ").split(/\s+/).map((word) => word.trim()).filter(Boolean);
+}
+
+function trimStops(words: string[]): string[] {
+  const next = [...words];
+  while (next.length && STOP.has(next[next.length - 1]!.toLowerCase())) next.pop();
+  while (next.length && STOP.has(next[0]!.toLowerCase())) next.shift();
+  return next;
+}
+
+function isWeak(label: string): boolean {
+  const words = wordsOf(label);
+  return words.length === 0 || words.every((word) => STOP.has(word.toLowerCase()) || VERB.has(word.toLowerCase()));
+}
+
+function sameClause(text: string, fromEnd: boolean): string {
+  const parts = text.split(/[.!?\n]/).map((part) => part.trim()).filter((part) => part.length > 0);
+  if (!parts.length) return "";
+  return fromEnd ? parts[parts.length - 1]! : parts[0]!;
+}
+
+function cleanLabel(label: string): string {
+  return label.replace(/[$£€]?\d[\d,]*(?:\.\d+)?%?/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function figuresIn(text: string, title: string): SourceNumber[] {
+  const found: SourceNumber[] = [];
+  for (const match of text.matchAll(NUMBER_RE)) {
+    const raw = match[0] ?? "";
+    const num = match.groups?.num ?? "";
+    const unit = (match.groups?.unit ?? "").toLowerCase();
+    const currency = match.groups?.currency ?? "";
+    const start = match.index ?? 0;
+    const end = start + raw.length;
+    const value = Number(num.replace(/,/g, ""));
+    if (!Number.isFinite(value)) continue;
+    if (!unit && !currency && value >= 1900 && value <= 2099 && Number.isInteger(value)) continue;
+    if (!unit && !currency && value < 10 && Number.isInteger(value) && /^[.)]/.test(text.slice(end, end + 2))) continue;
+    if (!unit && !currency && /[/-]/.test(text[end] ?? "") && /\d/.test(text[end + 1] ?? "")) continue;
+    if (!unit && !currency && /[/-]/.test(text[start - 1] ?? "") && /\d/.test(text[start - 2] ?? "")) continue;
+    if (!unit && !currency && text[end] === "-" && /[A-Za-z]/.test(text[end + 1] ?? "")) continue;
+    if (!unit && !currency && Number.isInteger(value) && value < 100 && /step\s*$/i.test(text.slice(Math.max(0, start - 8), start))) continue;
+    const before = trimStops(wordsOf(sameClause(text.slice(0, start), true)).slice(-4));
+    const after = trimStops(wordsOf(sameClause(text.slice(end), false)).slice(0, 4));
+    let label = cleanLabel(before.join(" "));
+    if (!label || VERB.has(label.toLowerCase()) || isWeak(label)) label = cleanLabel(after.join(" "));
+    if (isWeak(label)) label = title.trim();
+    label = label.replace(/\s+/g, " ").trim().slice(0, 48);
+    const scaled = unit === "k" || unit === "thousand"
+      ? value * 1_000
+      : unit === "m" || unit === "mn" || unit === "million"
+        ? value * 1_000_000
+        : unit === "bn" || unit === "billion"
+          ? value * 1_000_000_000
+          : value;
+    const suffix = unit === "%" ? "%" : unit === "m" ? "M" : unit === "k" ? "K" : unit ? ` ${unit}` : "";
+    const display = `${currency}${num}${suffix}`.replace(/\s+/g, " ").trim();
+    found.push({ label, value: scaled, display: display || raw.trim() });
+  }
+  return found;
+}
+
+function cachePoints(block: string): { idx: number; text: string }[] {
+  return [...block.matchAll(/<c:pt\b[^>]*\bidx="(\d+)"[^>]*>[\s\S]*?<c:v>([^<]*)<\/c:v>/g)].map((match) => ({
+    idx: Number(match[1]),
+    text: decode(match[2] ?? "").trim(),
+  }));
+}
+
+function seriesName(ser: string, index: number, total: number): string {
+  const tx = ser.match(/<c:tx>([\s\S]*?)<\/c:tx>/)?.[1] ?? "";
+  const cached = cachePoints(tx).map((point) => point.text).filter(Boolean);
+  const direct = [...tx.matchAll(/<c:v>([^<]*)<\/c:v>/g)].map((match) => decode(match[1] ?? "").trim()).filter(Boolean);
+  const name = (cached[0] || direct[0] || "").trim();
+  if (name) return name.slice(0, 48);
+  return total > 1 ? `Series ${index + 1}` : "Value";
+}
+
+function chartOf(xml: string): SourceChart | null {
+  let kind: SourceChart["kind"] | null = null;
+  let drawn = "";
+  if (/<c:(?:doughnutChart|ofPieChart)\b/.test(xml)) kind = "donut";
+  else if (/<c:pieChart\b/.test(xml)) {
+    kind = "donut";
+    drawn = "Pie, drawn as a donut.";
+  } else if (/<c:areaChart\b/.test(xml)) {
+    kind = "line";
+    drawn = "Area, drawn as a line.";
+  } else if (/<c:lineChart\b/.test(xml)) kind = "line";
+  else if (/<c:barChart\b/.test(xml)) {
+    const dir = xml.match(/<c:barDir\b[^>]*\bval="([^"]+)"/)?.[1] ?? "col";
+    const grouping = xml.match(/<c:grouping\b[^>]*\bval="([^"]+)"/)?.[1] ?? "";
+    if (grouping === "stacked" || grouping === "percentStacked") kind = "stacked";
+    else kind = dir === "bar" ? "bars" : "columns";
+  }
+  if (!kind) return null;
+  const sers = [...xml.matchAll(/<c:ser\b[^>]*>([\s\S]*?)<\/c:ser>/g)].map((match) => match[1] ?? "");
+  if (!sers.length) return null;
+  const parsed = sers.slice(0, 6).map((ser, index) => {
+    const cat = ser.match(/<c:cat>([\s\S]*?)<\/c:cat>/)?.[1] ?? "";
+    const val = ser.match(/<c:val>([\s\S]*?)<\/c:val>/)?.[1] ?? "";
+    return {
+      name: seriesName(ser, index, sers.length),
+      cats: cachePoints(cat),
+      vals: cachePoints(val),
+    };
+  });
+  const last = Math.max(
+    0,
+    ...parsed.flatMap((series) => [...series.cats, ...series.vals].map((point) => point.idx)),
+  );
+  const count = Math.min(24, last + 1);
+  if (!count) return null;
+  const categories = Array.from({ length: count }, (_, index) => {
+    for (const series of parsed) {
+      const found = series.cats.find((point) => point.idx === index);
+      if (found?.text) return found.text;
+    }
+    return `${index + 1}`;
+  });
+  const series: SourceSeries[] = parsed.map((item) => ({
+    name: item.name,
+    values: Array.from({ length: count }, (_, index) => {
+      const found = item.vals.find((point) => point.idx === index);
+      const value = found ? Number(found.text.replace(/,/g, "")) : 0;
+      return Number.isFinite(value) ? value : 0;
+    }),
+  })).filter((item) => item.values.some((value) => value !== 0));
+  if (!series.length) return null;
+  return { kind, drawn, categories, series };
+}
+
+function chartTitle(xml: string): string {
+  const block = xml.match(/<c:title>([\s\S]*?)<\/c:title>/)?.[1] ?? "";
+  return [...block.matchAll(/<c:v>([^<]*)<\/c:v>/g)].map((match) => decode(match[1] ?? "")).join(" ").replace(/\s+/g, " ").trim();
+}
+
+function dropEchoes(numbers: SourceNumber[], chart: SourceChart | null): SourceNumber[] {
+  if (!chart) return numbers;
+  const points = new Set<string>();
+  chart.categories.forEach((category, index) => {
+    for (const series of chart.series) {
+      const value = series.values[index];
+      if (value == null || !Number.isFinite(value)) continue;
+      points.add(`${category.trim().toLowerCase()}|${value}`);
+    }
+  });
+  const seen = new Set<string>();
+  const kept: SourceNumber[] = [];
+  for (const number of numbers) {
+    const key = `${number.label.trim().toLowerCase()}|${number.value}`;
+    if (points.has(key) || seen.has(`${number.display}|${number.label}`)) continue;
+    seen.add(`${number.display}|${number.label}`);
+    kept.push(number);
+  }
+  return kept.slice(0, 12);
+}
+
+type CellNum = { value: number; approx: boolean };
+
+function parseCell(text: string): CellNum | null {
+  const trimmed = text.trim();
+  const approx = /^[~≈]/.test(trimmed);
+  const body = trimmed.replace(/^[~≈]\s*/, "");
+  if (!/^[$£€]?\d{1,3}(?:,\d{3})*(?:\.\d+)?%?$/.test(body) && !/^[$£€]?\d+(?:\.\d+)?%?$/.test(body)) return null;
+  const value = Number(body.replace(/[$£€%,]/g, ""));
+  if (!Number.isFinite(value)) return null;
+  return { value, approx };
+}
+
+function tablesOf(xml: string): string[][][] {
+  const tables: string[][][] = [];
+  for (const table of xml.matchAll(/<a:tbl>([\s\S]*?)<\/a:tbl>/g)) {
+    const rows = [...table[1].matchAll(/<a:tr\b[\s\S]*?<\/a:tr>/g)].map((row) =>
+      [...row[0].matchAll(/<a:tc\b[\s\S]*?<\/a:tc>/g)].map((cell) => textsOf(cell[0], false).replace(/\s+/g, " ").trim()),
+    );
+    if (rows.some((row) => row.some(Boolean))) tables.push(rows);
+  }
+  return tables;
+}
+
+function modelTable(raw: string[][]): SourceTable | null {
+  if (raw.length < 2) return null;
+  const width = Math.max(...raw.map((row) => row.length));
+  const rows = raw.map((row) => Array.from({ length: width }, (_, index) => (row[index] ?? "").trim()));
+  const numericCount = (row: string[]) => row.filter((cell) => parseCell(cell)).length;
+  const firstLabel = !parseCell((rows[0] ?? [])[0] ?? "");
+  const belowNumeric = rows.slice(1).filter((row) => row.slice(1).some((cell) => parseCell(cell))).length;
+  const yearHeaders = (rows[0] ?? []).slice(1).filter((cell) => {
+    const parsed = parseCell(cell);
+    return Boolean(parsed && parsed.value >= 1900 && parsed.value <= 2099 && Number.isInteger(parsed.value));
+  }).length;
+  const headered = firstLabel && belowNumeric >= 1 && (numericCount(rows[0] ?? []) === 0 || yearHeaders >= 1);
+  const headers = headered
+    ? (rows[0] ?? []).map((cell, index) => cell || (index === 0 ? "Item" : `Value ${index}`))
+    : (rows[0] ?? []).map((_, index) => (index === 0 ? "Item" : `Value ${index}`));
+  const body = (headered ? rows.slice(1) : rows).filter((row) => row.some(Boolean));
+  if (body.length < 2) return null;
+  return { headers, rows: body };
+}
+
+function pickTable(tables: string[][][]): SourceTable | null {
+  const models = tables.map(modelTable).filter((table): table is SourceTable => Boolean(table));
+  if (!models.length) return null;
+  const score = (table: SourceTable) => table.rows.reduce((total, row) => total + row.filter((cell) => parseCell(cell)).length, 0);
+  return [...models].sort((left, right) => score(right) - score(left))[0] ?? null;
+}
+
+const DAY_LABEL = /^(?:mon|tue|wed|thu|fri|sat|sun)\b|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:19|20)\d{2}-\d{2}-\d{2}/i;
+const MONTH_LABEL = /^(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b/i;
+
+function shareOf(labels: string[], pattern: RegExp): number {
+  if (!labels.length) return 0;
+  return labels.filter((label) => pattern.test(label.trim())).length / labels.length;
+}
+
+function chartFromTable(table: SourceTable, title: string): SourceChart | null {
+  const labels = table.rows.map((row, index) => (row[0] ?? "").trim() || `Row ${index + 1}`);
+  const numericCols = table.headers
+    .map((_, index) => index)
+    .filter((index) => index > 0 && table.rows.filter((row) => parseCell(row[index] ?? "")).length >= Math.min(2, table.rows.length));
+  if (!numericCols.length) return null;
+  const withoutTotal = numericCols.filter((index) => !/^(total|overall|sum)$/i.test(table.headers[index] ?? ""));
+  const used = withoutTotal.length ? withoutTotal : numericCols;
+  const droppedTotal = withoutTotal.length > 0 && withoutTotal.length < numericCols.length;
+  const dataRows = table.rows
+    .map((row, index) => ({ row, label: labels[index] ?? `Row ${index + 1}` }))
+    .filter((item) => used.some((index) => parseCell(item.row[index] ?? "")));
+  if (dataRows.length < 2) return null;
+  const capped = dataRows.slice(0, 16);
+  const series = used.map((index) => ({
+    name: (table.headers[index] || "Value").slice(0, 48),
+    values: capped.map((item) => parseCell(item.row[index] ?? "")?.value ?? 0),
+  }));
+  const live = series.filter((item) => item.values.some((value) => value !== 0));
+  if (!live.length) return null;
+  const kept = live.length === series.length || live.length === 0 ? series : series;
+  const categories = capped.map((item) => item.label);
+  const approx = capped.some((item) => used.some((index) => parseCell(item.row[index] ?? "")?.approx));
+  const fitSeries = kept.map((item) => ({ name: item.name, values: item.values }));
+  let kind: SourceChart["kind"];
+  let sentence: string;
+  const yearNames = kept.length >= 2 && kept.every((item) => /^(19|20)\d{2}$/.test(item.name.trim()));
+  const one = kept.length === 1 ? kept[0]! : null;
+  const decreasing = Boolean(
+    one && one.values.length >= 3 && one.values.every((value, index) => index === 0 || value <= (one.values[index - 1] ?? 0)) && (one.values[0] ?? 0) > (one.values[one.values.length - 1] ?? 0),
+  );
+  const funnelWord = /funnel|conversion/i.test(title) || /funnel|stage/i.test(kept.map((item) => item.name).join(" "));
+  if (yearNames) {
+    kind = "columns";
+    sentence = "Year over year. Each column is a year from the table.";
+  } else if (isTimeLabels(categories)) {
+    kind = "line";
+    if (shareOf(categories, DAY_LABEL) >= 0.6) sentence = "Day over day. The line follows the dates in the table.";
+    else if (shareOf(categories, MONTH_LABEL) >= 0.6) sentence = "Month over month. The line follows the months in the table.";
+    else sentence = "Drawn as a line. The points run across the periods in the table.";
+  } else if (one && decreasing && funnelWord && one.values.every((value) => value >= 0)) {
+    kind = "funnel";
+    sentence = "Drawn as a funnel. Each step is a row in the table, top to bottom.";
+  } else {
+    const fitted = chartFit(categories, fitSeries);
+    kind = fitted.kind;
+    sentence = fitted.sentence;
+  }
+  if (droppedTotal) sentence += " Total stays in the table.";
+  if (approx) sentence += " A tilde in the table is approximate.";
+  if (dataRows.length > capped.length) sentence += ` First ${capped.length} of ${dataRows.length} rows are drawn.`;
+  return { kind, drawn: sentence, categories, series: kept };
+}
+
+/** The cell as written, so a tilde is not dropped when the bar is labeled. */
+export function rowDisplay(table: SourceTable | null, category: string, series: SourceSeries[], fallback: string): string {
+  if (!table) return fallback;
+  const row = table.rows.find((item) => (item[0] ?? "").trim() === category);
+  if (!row) return fallback;
+  const bits = series.map((item) => {
+    const column = table.headers.findIndex((header) => header.trim() === item.name);
+    return column >= 0 ? (row[column] ?? "").trim() : "";
+  }).filter(Boolean);
+  return bits.length ? bits.join(" · ") : fallback;
+}
+
+function imageMimeOf(name: string): SourceImage["mime"] | null {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".gif")) return "image/gif";
+  return null;
+}
+
+function asDataUrl(bytes: Uint8Array, mime: SourceImage["mime"]): string {
+  let binary = "";
+  for (let cursor = 0; cursor < bytes.length; cursor += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(cursor, cursor + 0x8000));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/** Every png, jpeg, and gif on the slide. A chart saved as a picture is included. */
+async function imagesOn(zip: JSZip, rels: string, xml: string): Promise<SourceImage[]> {
+  if (!rels) return [];
+  const embeds = new Set([...xml.matchAll(/\br:embed="([^"]+)"/g)].map((match) => match[1] ?? "").filter(Boolean));
+  const images: SourceImage[] = [];
+  for (const tag of rels.matchAll(/<Relationship\b[^>]*>/g)) {
+    if (images.length >= 8) break;
+    const id = attr(tag[0], "Id");
+    const target = attr(tag[0], "Target");
+    const type = attr(tag[0], "Type");
+    if (!id || !target || !embeds.has(id) || !/\/image$/i.test(type)) continue;
+    const mime = imageMimeOf(target);
+    if (!mime) continue;
+    const path = resolvePath("ppt/slides/slide.xml", target);
+    const file = zip.file(path);
+    if (!file) continue;
+    const bytes = await file.async("uint8array");
+    if (bytes.length < 40 || bytes.length > 8_000_000) continue;
+    images.push({ mime, dataUrl: asDataUrl(bytes, mime) });
+  }
+  return images;
+}
+
+function runningFooter(slides: SourceSlide[]): string {
+  const counts = new Map<string, number>();
+  for (const slide of slides) {
+    const tail = slide.context.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+    if (!tail || tail.length > 60) continue;
+    counts.set(tail, (counts.get(tail) ?? 0) + 1);
+  }
+  const top = [...counts.entries()].sort((left, right) => right[1] - left[1])[0];
+  if (!top || top[1] < Math.max(3, Math.ceil(slides.length * 0.4))) return "";
+  return top[0];
+}
+
+export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promise<{ deck: SourceDeck; text: string; note: string }> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    throw new Error("Could not read that PowerPoint. Save it as .pptx.");
+  }
+  const names = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((left, right) => Number(left.match(/(\d+)\.xml$/i)?.[1] ?? 0) - Number(right.match(/(\d+)\.xml$/i)?.[1] ?? 0));
+  const slides: SourceSlide[] = [];
+  const markedPicture: boolean[] = [];
+  for (const name of names) {
+    const xml = await zip.file(name)!.async("string");
+    const rels = await zip.file(name.replace("ppt/slides/", "ppt/slides/_rels/").replace(/\.xml$/i, ".xml.rels"))?.async("string");
+    const charts: SourceChart[] = [];
+    let named = "";
+    if (rels) {
+      for (const tag of rels.matchAll(/<Relationship\b[^>]*>/g)) {
+        const id = attr(tag[0], "Id");
+        const target = attr(tag[0], "Target");
+        const type = attr(tag[0], "Type");
+        if (!id || !target || !/\/chart$/i.test(type)) continue;
+        const path = resolvePath(name, target);
+        const chartXml = await zip.file(path)?.async("string");
+        if (!chartXml) continue;
+        if (!named) named = chartTitle(chartXml);
+        const chart = chartOf(chartXml);
+        if (chart) charts.push(chart);
+      }
+    }
+    const blocks = blocksOf(xml);
+    let title = (blocks.find((block) => block.role === "title")?.text ?? "").split("\n")[0]?.trim() ?? "";
+    let body = blocks.filter((block) => block.role === "body");
+    if (!title) {
+      const first = body[0];
+      const head = first?.text.split("\n").map((line) => line.trim()).filter(Boolean)[0] ?? "";
+      if (head && head.length <= 80) {
+        title = head;
+        const restLines = (first?.text.split("\n").slice(1) ?? []).map((line) => line.trim()).filter(Boolean);
+        const rest = [...restLines, ...body.slice(1).map((block) => block.text).filter(Boolean)];
+        body = rest.length ? [{ role: "body", text: rest.join("\n") }] : [];
+      }
+    }
+    if (!title && named) title = named;
+    const table = pickTable(tablesOf(xml));
+    let chart: SourceChart | null = charts[0] ?? null;
+    if (!chart && table) chart = chartFromTable(table, title);
+    if (!title && chart) {
+      const seriesName = chart.series.map((series) => series.name).find((item) => item && item !== "Value");
+      if (seriesName) title = seriesName;
+    }
+    const context = body.map((block) => block.text).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    const images = await imagesOn(zip, rels ?? "", xml);
+    markedPicture.push(/<p:pic\b/.test(xml));
+    slides.push({
+      index: slides.length + 1,
+      title: title.slice(0, 140),
+      context,
+      numbers: [],
+      chart,
+      extraCharts: Math.max(0, charts.length - 1),
+      picture: false,
+      images,
+      table,
+    });
+  }
+  const footer = runningFooter(slides);
+  slides.forEach((slide, index) => {
+    if (footer) {
+      slide.context = slide.context.split("\n").map((line) => line.trim()).filter((line) => line && line !== footer).join("\n");
+    }
+    slide.numbers = dropEchoes(
+      [...figuresIn(slide.title, slide.title), ...figuresIn(slide.context, slide.title)],
+      slide.chart,
+    );
+    const textLen = `${slide.title} ${slide.context}`.trim().length;
+    slide.picture = (slide.images.length > 0 || markedPicture[index] === true) && textLen < 12 && !slide.chart && slide.numbers.length === 0;
+  });
+  const shaped = spreadPictures(titlePass(slides));
+  const title = shaped.find((slide) => slide.title.trim())?.title.trim() || fileTitle(fileName);
+  const deck: SourceDeck = { title: title.slice(0, 80), intent: "", slides: shaped };
+  deck.intent = shaped.length ? intentOf(shaped, deck.title) : "";
+  const text = shaped
+    .map((slide) => [slide.title, slide.context].filter(Boolean).join("\n"))
+    .filter(Boolean)
+    .join("\n\n");
+  const charts = shaped.filter((slide) => slide.chart).length;
+  const figures = shaped.reduce((total, slide) => total + slide.numbers.length, 0);
+  const note = shaped.length
+    ? `Read ${shaped.length} ${shaped.length === 1 ? "slide" : "slides"} from ${fileName || "the deck"}. ${charts} ${charts === 1 ? "chart" : "charts"}, ${figures} ${figures === 1 ? "figure" : "figures"}.`
+    : `${fileName || "That deck"} had no slides.`;
+  return { deck, text, note };
+}
+
+function personName(text: string): string {
+  const line = text.trim();
+  if (!line || line.length > 42 || /[\d.!?:,]/.test(line)) return "";
+  const words = line.split(/\s+/);
+  if (words.length < 2 || words.length > 3) return "";
+  if (!words.every((word) => /^[A-Z][a-zA-Z'’-]+$/.test(word))) return "";
+  return line;
+}
+
+function dateOnly(text: string): boolean {
+  return DATE_TOKEN.test(text) && text.trim().length < 24;
+}
+
+function reindex(slides: SourceSlide[]): SourceSlide[] {
+  return slides.map((slide, index) => ({ ...slide, index: index + 1 }));
+}
+
+/** Slide 1 is the title and the presenter. Any other opening words move to the next slide. */
+function titlePass(slides: SourceSlide[]): SourceSlide[] {
+  const first = slides[0];
+  if (!first) return slides;
+  const lines = first.context.split(/\n/).map((line) => line.trim()).filter(Boolean);
+  const presenter = lines.map(personName).find(Boolean) ?? "";
+  const restLines = lines.filter((line) => line !== presenter && !dateOnly(line));
+  const title = first.title.trim() || "Untitled";
+  const opening: SourceSlide = {
+    index: 1,
+    title,
+    context: presenter,
+    numbers: [],
+    chart: null,
+    extraCharts: 0,
+    picture: false,
+    images: [],
+    table: null,
+  };
+  const hasRest = restLines.length > 0 || first.images.length > 0 || Boolean(first.chart) || Boolean(first.table) || first.numbers.length > 0;
+  const follow = hasRest ? [{ ...first, title, context: restLines.join("\n") }] : [];
+  return reindex([opening, ...follow, ...slides.slice(1)]);
+}
+
+/** Four pictures fit on one white slide. More than that continues on the next slide. */
+function spreadPictures(slides: SourceSlide[]): SourceSlide[] {
+  const out: SourceSlide[] = [];
+  for (const slide of slides) {
+    if (slide.images.length <= 4) {
+      out.push(slide);
+      continue;
+    }
+    const mid = Math.ceil(slide.images.length / 2);
+    const lines = slide.context.split(/\n/).map((line) => line.trim()).filter(Boolean);
+    const cut = lines.length >= 2 ? Math.ceil(lines.length / 2) : lines.length;
+    const firstLines = lines.slice(0, cut);
+    const secondLines = lines.slice(cut);
+    out.push({ ...slide, images: slide.images.slice(0, mid), context: firstLines.join("\n") });
+    out.push({
+      ...slide,
+      images: slide.images.slice(mid, mid + 4),
+      context: secondLines.length ? [CONTINUED, ...secondLines].join("\n") : `${CONTINUED}\nThese pictures follow the ones on the previous slide.`,
+      chart: null,
+      table: null,
+      numbers: [],
+      extraCharts: 0,
+    });
+  }
+  return reindex(out);
+}
+
+export type SlideImage = {
+  index: number;
+  mime: "image/png" | "image/jpeg";
+  base64: string;
+};
+
+function imageMime(name: string): SlideImage["mime"] | null {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  return null;
+}
+
+/** Pictures on slides that have no native chart. Tiny files and other formats are skipped. */
+export async function slideImages(buffer: ArrayBuffer, indexes: number[]): Promise<SlideImage[]> {
+  const wanted = new Set(indexes);
+  if (wanted.size === 0) return [];
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(buffer);
+  } catch {
+    return [];
+  }
+  const names = Object.keys(zip.files)
+    .filter((name) => /^ppt\/slides\/slide\d+\.xml$/i.test(name))
+    .sort((left, right) => Number(left.match(/(\d+)\.xml$/i)?.[1] ?? 0) - Number(right.match(/(\d+)\.xml$/i)?.[1] ?? 0));
+  const found: SlideImage[] = [];
+  for (const name of names) {
+    const index = names.indexOf(name) + 1;
+    if (!wanted.has(index) || found.length >= 6) continue;
+    const rels = await zip.file(name.replace("ppt/slides/", "ppt/slides/_rels/").replace(/\.xml$/i, ".xml.rels"))?.async("string");
+    if (!rels) continue;
+    const xml = await zip.file(name)?.async("string");
+    if (!xml) continue;
+    const embeds = new Set([...xml.matchAll(/\br:embed="([^"]+)"/g)].map((match) => match[1] ?? "").filter(Boolean));
+    let best: { bytes: Uint8Array; mime: SlideImage["mime"] } | null = null;
+    for (const tag of rels.matchAll(/<Relationship\b[^>]*>/g)) {
+      const id = attr(tag[0], "Id");
+      const target = attr(tag[0], "Target");
+      const type = attr(tag[0], "Type");
+      if (!id || !target || !embeds.has(id) || !/\/image$/i.test(type)) continue;
+      const mime = imageMime(target);
+      if (!mime) continue;
+      const path = resolvePath(name, target);
+      const file = zip.file(path);
+      if (!file) continue;
+      const bytes = await file.async("uint8array");
+      if (bytes.length < 8000 || bytes.length > 8_000_000) continue;
+      if (!best || bytes.length > best.bytes.length) best = { bytes, mime };
+    }
+    if (!best) continue;
+    let binary = "";
+    for (let cursor = 0; cursor < best.bytes.length; cursor += 0x8000) {
+      binary += String.fromCharCode(...best.bytes.subarray(cursor, cursor + 0x8000));
+    }
+    found.push({ index, mime: best.mime, base64: btoa(binary) });
+  }
+  return found;
+}
+
+/** A picture read replaces only a slide that has no native chart. */
+export function applyPictureReads(deck: SourceDeck, reads: { index: number; text: string }[]): SourceDeck {
+  const slides = deck.slides.map((slide) => {
+    if (slide.chart) return slide;
+    const text = reads.find((item) => item.index === slide.index)?.text ?? "";
+    if (!text.trim()) return slide;
+    const read = pictureFromModel(text);
+    if (!read) return slide;
+    if (read.chart) {
+      return { ...slide, picture: false, title: slide.title.trim() || read.title, chart: read.chart };
+    }
+    if (read.numbers.length === 0 && !read.title) return slide;
+    return {
+      ...slide,
+      picture: false,
+      title: slide.title.trim() || read.title,
+      numbers: read.numbers.length > 0 ? read.numbers : slide.numbers,
+    };
+  });
+  const next: SourceDeck = { ...deck, slides };
+  next.intent = intentOf(slides, deck.title);
+  return next;
+}
