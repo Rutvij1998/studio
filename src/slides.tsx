@@ -18,7 +18,7 @@ import { chartFit, comboPair } from "./fit";
 import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, isGrid } from "./grid";
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesChartsSource, seriesProgressList, trackNote, trackTotals } from "./reading";
-import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, chartSentence, copyBlocks, figureBody, formLabel, formatPoint, isContinued, isSource, leadCopy, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, spareHeaders } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, chartSentence, copyBlocks, figureBody, formLabel, formatPoint, imageSize, isContinued, isSource, leadCopy, pictureLayout, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide } from "./sourceDeck";
 import type { SheetGrid, SourceChart, SourceSlide, SourceTable } from "./book";
 
 export type SlideId =
@@ -1195,14 +1195,23 @@ function OriginDonut({ chart }: { chart: SourceChart }) {
   );
 }
 
-function KeptImages({ images, label }: { images: SourceSlide["images"]; label: string }) {
+function KeptImages({ images, label, stage = false }: { images: SourceSlide["images"]; label: string; stage?: boolean }) {
   if (images.length === 0) return null;
   const shown = images.slice(0, 4);
+  const layout = pictureLayout(shown);
   return (
-    <div className={`kept-images kept-${shown.length}`}>
-      {shown.map((image, index) => (
-        <img key={`${image.mime}-${index}`} src={image.dataUrl} alt={label} />
-      ))}
+    <div className={`kept-images kept-${shown.length}${stage ? ` is-${layout}` : ""}`}>
+      {shown.map((image, index) => {
+        if (!stage) return <img key={`${image.mime}-${index}`} src={image.dataUrl} alt={label} />;
+        const size = imageSize(image.dataUrl);
+        return (
+          <div className="picture-cell" key={`${image.mime}-${index}`}>
+            <div className="picture-fit" style={size ? { ["--r" as string]: String(size.width / size.height) } : undefined}>
+              <img src={image.dataUrl} alt={label} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -1283,8 +1292,9 @@ function OriginChart({ slide }: { slide: SourceSlide }) {
     chartFoot(chart),
   ].filter(Boolean).join(" ");
   const showLegend = mode === "trend" || mode === "columns" || mode === "stacked";
+  const beside = slideShow(slide) === "chart" ? null : slide.table;
   return (
-    <article className={`slide story is-${mode}${!inline && slide.table ? " has-table" : ""}`}>
+    <article className={`slide story is-${mode}${!inline && beside ? " has-table" : ""}`}>
       <header className="origin-top">
         <div>
           {eyebrow ? <p className="kicker">{eyebrow}</p> : null}
@@ -1298,7 +1308,7 @@ function OriginChart({ slide }: { slide: SourceSlide }) {
           <ChartPlot chart={chart} table={slide.table} />
           <KeptImages images={slide.images} label={slide.title || "Chart picture"} />
         </div>
-        {!inline && slide.table ? <TableCard table={slide.table} /> : null}
+        {!inline && beside ? <TableCard table={beside} /> : null}
       </div>
       {note && <p className="bar-note">{note}</p>}
     </article>
@@ -1341,7 +1351,11 @@ function OriginNumbers({ slide }: { slide: SourceSlide }) {
           {number.label && <p className="rate-caption">{number.label}</p>}
         </div>
         {body ? <CopyBlocks text={body} tone="figure" /> : null}
-        <KeptImages images={slide.images} label={slide.title || "Picture"} />
+        {slide.images.length ? (
+          <div className="picture-stage">
+            <KeptImages images={slide.images} label={slide.title || "Picture"} stage />
+          </div>
+        ) : null}
       </article>
     );
   }
@@ -1361,7 +1375,11 @@ function OriginNumbers({ slide }: { slide: SourceSlide }) {
         ))}
       </ul>
       {body ? <CopyBlocks text={body} tone="figure" /> : null}
-      <KeptImages images={slide.images} label={slide.title || "Picture"} />
+      {slide.images.length ? (
+        <div className="picture-stage">
+          <KeptImages images={slide.images} label={slide.title || "Picture"} stage />
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1714,8 +1732,8 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
         </ul>
       ) : null}
       {pictures ? (
-        <div className="sheet-stage">
-          <KeptImages images={slide.images} label={slide.title.trim() || "Picture from the deck"} />
+        <div className="picture-stage">
+          <KeptImages images={slide.images} label={slide.title.trim() || "Picture from the deck"} stage />
         </div>
       ) : null}
     </article>
@@ -1759,6 +1777,31 @@ function OriginPieces({ slide }: { slide: SourceSlide }) {
           </div>
         );
       })}
+      {slide.images.length ? (
+        <div className="picture-stage">
+          <KeptImages images={slide.images} label={slide.title.trim() || "Picture"} stage />
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+function OriginTable({ slide }: { slide: SourceSlide }) {
+  const table = tableFromSlide(slide);
+  return (
+    <article className="slide paper origin is-table">
+      {isContinued(slide) ? <p className="kicker">Continued</p> : null}
+      <header className="book-top">
+        <p className="kicker">Table</p>
+        <h2>{slide.title.trim() || "Table"}</h2>
+      </header>
+      {slide.context.trim() ? <CopyBlocks text={slide.context} tone="figure" /> : null}
+      {table ? <TableCard table={table} /> : null}
+      {slide.images.length ? (
+        <div className="picture-stage">
+          <KeptImages images={slide.images} label={slide.title || "Picture"} stage />
+        </div>
+      ) : null}
     </article>
   );
 }
@@ -1776,7 +1819,8 @@ function Origin({ book, index }: { book: Book; index: number }) {
   const role = slideRole(slide);
   const structured = (slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list");
   if (role === "cover") return <OriginCover book={book} slide={slide} />;
-  if (role !== "chart" && structured && slide.images.length === 0) return <OriginPieces slide={slide} />;
+  if (role !== "chart" && structured) return <OriginPieces slide={slide} />;
+  if (role === "chart" && slideShow(slide) === "table") return <OriginTable slide={slide} />;
   if (role === "chart") return <OriginChart slide={slide} />;
   if (role === "figures") return <OriginNumbers slide={slide} />;
   if (role === "pictures" && presentKind(slide) === "picture" && slide.images.length === 0) return <OriginProse slide={slide} />;

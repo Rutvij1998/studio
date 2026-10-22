@@ -153,6 +153,10 @@ export type SourceSlide = {
   table: SourceTable | null;
   /** Cards and lists in source order. Empty when the slide is ordinary prose. */
   pieces?: SlidePiece[];
+  /** Why this slide was kept large, kept at reading size, or continued. */
+  pace?: string;
+  /** Chart, table, or both. Empty means both when the file has both. */
+  show?: "chart" | "table" | "both";
 };
 
 /** A deck read slide by slide. */

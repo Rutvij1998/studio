@@ -166,18 +166,22 @@ export function slideRead(slide: SourceSlide): string {
   }
   if (presentKind(slide) === "picture" || slide.images.length > 0) {
     const count = slide.images.length;
-    return count
+    const base = count
       ? `${count} ${count === 1 ? "picture stays" : "pictures stay"} on this slide.`
       : "This slide is a picture. No title, figure, or chart was stored as text.";
+    return slide.pace ? `${base} ${slide.pace}` : base;
   }
   if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list") && slide.images.length === 0) {
-    return "The points on this slide, kept as written.";
+    const kept = "The points on this slide, kept as written.";
+    return slide.pace ? `${slide.pace} ${kept}` : kept;
   }
   if (slide.numbers.length > 0) {
-    return slide.numbers.map((number) => (number.label ? `${number.label}: ${number.display}` : number.display)).join(". ") + ".";
+    const line = `${slide.numbers.map((number) => (number.label ? `${number.label}: ${number.display}` : number.display)).join(". ")}.`;
+    return slide.pace ? `${slide.pace} ${line}` : line;
   }
   if (!slide.title.trim() && !slide.context.trim()) return "This slide had no readable text.";
-  return "The words on this slide, kept as written.";
+  const words = "The words on this slide, kept as written.";
+  return slide.pace ? `${slide.pace} ${words}` : words;
 }
 
 export function railLabel(slide: SourceSlide): string {
@@ -193,7 +197,7 @@ export function railLabel(slide: SourceSlide): string {
 export function formLabel(slide: SourceSlide): string {
   const kind = presentKind(slide);
   if (kind === "cover") return "Opens";
-  if (kind === "chart" && slide.chart) return chartKindLabel(slide.chart.kind);
+  if (kind === "chart" && slide.chart) return slide.show === "table" ? "Table" : chartKindLabel(slide.chart.kind);
   if (kind === "picture") return "Picture";
   if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list")) return "Context";
   if (kind === "numbers") return "Figures";
@@ -216,7 +220,9 @@ function intentOf(slides: SourceSlide[], title: string): string {
     .filter((name) => name && name !== lead)
     .slice(0, 3);
   const tail = next.length ? ` Then ${next.join(", ")}.` : "";
-  return `Read ${bits.join(", ")}. Every slide is kept. Pictures stay on the slide. Charts are redrawn in the studio colors. A table of numbers is drawn as a chart, and the table stays. Lead: ${lead}.${tail}`;
+  const split = slides.filter((slide) => slide.pace?.includes("Split into")).length;
+  const opened = split ? ` ${split} ${split === 1 ? "slide was" : "slides were"} split so each one stays readable.` : "";
+  return `Read ${bits.join(", ")}. Every slide is kept. Pictures stay on the slide. Charts are redrawn in the studio colors. A table of numbers is drawn as a chart, and the table stays. Lead: ${lead}.${tail}${opened}`;
 }
 
 export type SlideRole = "cover" | "chart" | "figures" | "pictures" | "bullets" | "prose";
@@ -992,6 +998,57 @@ export function pieceFit(slide: Pick<SourceSlide, "pieces" | "title" | "context"
   return occupy(slide.pieces ?? [], "roomy", options) <= FIT_LIMIT ? "roomy" : "read";
 }
 
+export type Density = "light" | "right" | "full" | "over";
+
+const LIGHT_LIMIT = 460;
+
+function ideaWeight(pieces: SlidePiece[]): number {
+  return pieces.reduce((total, piece) => {
+    if (piece.kind === "list") return total + piece.points.length + (piece.title ? 1 : 0);
+    if (piece.kind === "card") return total + 1;
+    return total + Math.max(1, piece.text.split("\n").filter(Boolean).length);
+  }, 0);
+}
+
+/** How full a card slide is at the reading size and one step up. */
+export function pieceDensity(pieces: SlidePiece[], title: string, continued = false): Density {
+  const options = { title, continued };
+  if (occupy(pieces, "read", options) > FIT_LIMIT) return "over";
+  const roomy = occupy(pieces, "roomy", options);
+  if (roomy > FIT_LIMIT) return "full";
+  if (ideaWeight(pieces) <= 2 && roomy <= LIGHT_LIMIT) return "light";
+  return "right";
+}
+
+function lightLine(pieces: SlidePiece[]): string {
+  const only = pieces.length === 1 ? pieces[0] : undefined;
+  const onePoint = only?.kind === "list" && only.points.length === 1 && !only.title;
+  const oneLine = only?.kind === "prose" && !only.text.includes("\n");
+  return onePoint || oneLine ? "One point. Left large." : "Left large.";
+}
+
+function loadPhrase(pieces: SlidePiece[]): string {
+  let points = 0;
+  let cards = 0;
+  let paragraphs = 0;
+  for (const piece of pieces) {
+    if (piece.kind === "list") points += piece.points.length;
+    else if (piece.kind === "card") cards += 1;
+    else paragraphs += 1;
+  }
+  const bits: string[] = [];
+  if (points) bits.push(`${points} ${points === 1 ? "point" : "points"}`);
+  if (cards) bits.push(`${cards} ${cards === 1 ? "card" : "cards"}`);
+  if (paragraphs) bits.push(`${paragraphs} ${paragraphs === 1 ? "paragraph" : "paragraphs"}`);
+  return bits.join(" and ");
+}
+
+function splitLine(pieces: SlidePiece[], pages: number): string {
+  const load = loadPhrase(pieces);
+  const noun = `${pages} ${pages === 1 ? "slide" : "slides"}`;
+  return load ? `${load}. Split into ${noun}. Nothing was rewritten.` : `Split into ${noun}. Nothing was rewritten.`;
+}
+
 export function pieceFrame(fit: PieceFit) {
   const type = PIECE_TYPE[fit];
   return {
@@ -1009,16 +1066,73 @@ function paginate(pieces: SlidePiece[], title: string): SlidePiece[][] {
   const pages: SlidePiece[][] = [];
   let page: SlidePiece[] = [];
   const fits = (items: SlidePiece[], continued: boolean) => occupy(items, "read", { title, continued }) <= FIT_LIMIT;
-  for (const band of pieceBands(pieces)) {
-    const items = band.kind === "prose" ? [{ kind: "prose" as const, text: band.text }] : band.items;
-    if (page.length && !fits([...page, ...items], pages.length > 0)) {
+
+  const divide = (piece: SlidePiece, continued: boolean): SlidePiece[] => {
+    if (piece.kind === "list" && piece.points.length > 1) {
+      let count = 1;
+      while (count < piece.points.length && fits([{ ...piece, points: piece.points.slice(0, count + 1) }], continued)) count += 1;
+      if (count >= piece.points.length) return [piece];
+      const rest: ListPiece = { ...piece, points: piece.points.slice(count) };
+      return [{ ...piece, points: piece.points.slice(0, count) }, ...divide(rest, true)];
+    }
+    if (piece.kind === "prose") {
+      const lines = piece.text.split("\n").map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) return [piece];
+      let count = 1;
+      while (count < lines.length && fits([{ kind: "prose", text: lines.slice(0, count + 1).join("\n") }], continued)) count += 1;
+      if (count >= lines.length) return [piece];
+      const rest: SlidePiece = { kind: "prose", text: lines.slice(count).join("\n") };
+      return [{ kind: "prose", text: lines.slice(0, count).join("\n") }, ...divide(rest, true)];
+    }
+    return [piece];
+  };
+
+  const place = (piece: SlidePiece, allowSplit: boolean) => {
+    if (page.length && !fits([...page, piece], pages.length > 0)) {
       pages.push(page);
       page = [];
     }
-    page.push(...items);
-  }
+    if (!page.length && allowSplit && !fits([piece], pages.length > 0)) {
+      const parts = divide(piece, pages.length > 0);
+      if (parts.length > 1) {
+        // A split list stays one column. Side by side would hide the overflow.
+        for (const part of parts) {
+          if (page.length) {
+            pages.push(page);
+            page = [];
+          }
+          page.push(part);
+        }
+        return;
+      }
+    }
+    page.push(piece);
+  };
+
+  for (const piece of pieces) place(piece, true);
   if (page.length) pages.push(page);
   return pages.length ? pages : [[]];
+}
+
+/** A bullet wall stored as one paragraph is still a list. Fitting slides keep their original pieces. */
+function unpack(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  for (const piece of pieces) {
+    if (piece.kind !== "prose") {
+      out.push(piece);
+      continue;
+    }
+    const blocks = copyBlocks(piece.text);
+    if (!blocks.some((block) => block.kind === "list")) {
+      out.push(piece);
+      continue;
+    }
+    for (const block of blocks) {
+      if (block.kind === "list") out.push({ kind: "list", title: "", points: block.points });
+      else if (block.text.trim()) out.push({ kind: "prose", text: block.text });
+    }
+  }
+  return out;
 }
 
 /** A slide that cannot fit on one canvas continues on the next one. */
@@ -1026,12 +1140,12 @@ function spreadPieces(slides: SourceSlide[]): SourceSlide[] {
   const out: SourceSlide[] = [];
   for (const slide of slides) {
     const pieces = slide.pieces ?? [];
-    const structured = pieces.some((piece) => piece.kind === "card" || piece.kind === "list");
-    if (!structured || slide.chart || slide.images.length > 0) {
+    if (!pieces.length || slide.chart || slide.images.length > 0) {
       out.push(slide);
       continue;
     }
-    const pages = paginate(pieces, slide.title);
+    const units = unpack(pieces);
+    const pages = paginate(units, slide.title);
     if (pages.length <= 1) {
       out.push(slide);
       continue;
@@ -1043,6 +1157,7 @@ function spreadPieces(slides: SourceSlide[]): SourceSlide[] {
         pieces: page,
         numbers: index === 0 ? slide.numbers : [],
         images: index === 0 ? slide.images : [],
+        pace: index === 0 ? splitLine(units, pages.length) : "Continued. Nothing was rewritten.",
       });
     });
   }
@@ -1134,7 +1249,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     const textLen = `${slide.title} ${slide.context}`.trim().length;
     slide.picture = (slide.images.length > 0 || markedPicture[index] === true) && textLen < 12 && !slide.chart && slide.numbers.length === 0;
   });
-  const shaped = spreadPieces(spreadPictures(titlePass(slides)));
+  const shaped = markPace(spreadPieces(spreadPictures(titlePass(slides))));
   const title = shaped.find((slide) => slide.title.trim())?.title.trim() || fileTitle(fileName);
   const deck: SourceDeck = { title: title.slice(0, 80), intent: "", slides: shaped };
   deck.intent = shaped.length ? intentOf(shaped, deck.title) : "";
@@ -1207,6 +1322,67 @@ function titlePass(slides: SourceSlide[]): SourceSlide[] {
   return reindex([opening, ...follow, ...slides.slice(1)]);
 }
 
+/** Pixel size of a PNG, JPEG, or GIF data URL. Returns null when the header is unread. */
+export function imageSize(dataUrl: string): { width: number; height: number } | null {
+  const payload = dataUrl.slice(dataUrl.indexOf(",") + 1);
+  const chars = Math.min(payload.length, 4096);
+  const slice = payload.slice(0, chars - (chars % 4));
+  let binary = "";
+  try {
+    binary = atob(slice);
+  } catch {
+    return null;
+  }
+  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes.length >= 24) {
+    const width = (bytes[16]! << 24) | (bytes[17]! << 16) | (bytes[18]! << 8) | bytes[19]!;
+    const height = (bytes[20]! << 24) | (bytes[21]! << 16) | (bytes[22]! << 8) | bytes[23]!;
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes.length >= 10) {
+    const width = bytes[6]! | (bytes[7]! << 8);
+    const height = bytes[8]! | (bytes[9]! << 8);
+    return width > 0 && height > 0 ? { width, height } : null;
+  }
+  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
+    let cursor = 2;
+    while (cursor + 9 < bytes.length) {
+      if (bytes[cursor] !== 0xff) break;
+      const marker = bytes[cursor + 1] ?? 0;
+      if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+        const height = ((bytes[cursor + 5] ?? 0) << 8) | (bytes[cursor + 6] ?? 0);
+        const width = ((bytes[cursor + 7] ?? 0) << 8) | (bytes[cursor + 8] ?? 0);
+        return width > 0 && height > 0 ? { width, height } : null;
+      }
+      const size = ((bytes[cursor + 2] ?? 0) << 8) | (bytes[cursor + 3] ?? 0);
+      if (size < 2) break;
+      cursor += 2 + size;
+    }
+  }
+  return null;
+}
+
+export type PictureLayout = "solo" | "pair" | "stack" | "row" | "grid";
+
+/** How a handful of pictures share one slide. Wide strips stack. Tall shots sit in a row. */
+export function pictureLayout(images: Array<{ dataUrl: string }>): PictureLayout {
+  const shown = images.slice(0, 4);
+  if (shown.length <= 1) return "solo";
+  const ratios = shown.map((image) => {
+    const size = imageSize(image.dataUrl);
+    return size && size.height > 0 ? size.width / size.height : 1.4;
+  });
+  const strip = ratios.every((ratio) => ratio >= 2.4);
+  const tall = ratios.every((ratio) => ratio <= 1.15);
+  if (shown.length === 2) return strip ? "stack" : "pair";
+  if (shown.length === 3) {
+    if (strip) return "stack";
+    if (tall) return "row";
+    return "grid";
+  }
+  return "grid";
+}
+
 /** Four pictures fit on one white slide. More than that continues on the next slide. */
 function spreadPictures(slides: SourceSlide[]): SourceSlide[] {
   const out: SourceSlide[] = [];
@@ -1220,7 +1396,13 @@ function spreadPictures(slides: SourceSlide[]): SourceSlide[] {
     const cut = lines.length >= 2 ? Math.ceil(lines.length / 2) : lines.length;
     const firstLines = lines.slice(0, cut);
     const secondLines = lines.slice(cut);
-    out.push({ ...slide, images: slide.images.slice(0, mid), context: firstLines.join("\n") });
+    const count = slide.images.length;
+    out.push({
+      ...slide,
+      images: slide.images.slice(0, mid),
+      context: firstLines.join("\n"),
+      pace: `${count} pictures. Split into 2 slides. The pictures stay.`,
+    });
     out.push({
       ...slide,
       images: slide.images.slice(mid, mid + 4),
@@ -1229,9 +1411,238 @@ function spreadPictures(slides: SourceSlide[]): SourceSlide[] {
       table: null,
       numbers: [],
       extraCharts: 0,
+      pace: "Continued. The pictures stay.",
     });
   }
   return reindex(out);
+}
+
+/** Name a light slide and a slide that only fits at the reading size. Splits already carry their own note. */
+function markPace(slides: SourceSlide[]): SourceSlide[] {
+  return slides.map((slide) => {
+    if (slide.pace) return slide;
+    if (slide.index === 1 && !slide.chart && slide.images.length === 0 && !slide.table) return slide;
+    if (slide.chart) return slide;
+    const pieces = slide.pieces ?? [];
+    if (pieces.length && slide.images.length === 0) {
+      const band = pieceDensity(pieces, slide.title, isContinued(slide));
+      if (band === "light") return { ...slide, pace: lightLine(pieces) };
+      if (band === "full") return { ...slide, pace: "Fits at the reading size." };
+      if (band === "over") return { ...slide, pace: "Too full for one slide. The words stay as written." };
+      return slide;
+    }
+    const words = `${slide.title} ${slide.context}`.replace(/\s+/g, " ").trim();
+    if (slide.images.length === 1 && words.length < 80) return { ...slide, pace: "Left large." };
+    return slide;
+  });
+}
+
+export type SlideShow = "chart" | "table" | "both";
+
+export type SlideEdit = {
+  slides: SourceSlide[];
+  /** 0-based slide to show after the edit. */
+  index: number;
+  note: string;
+};
+
+/** Both when the file has a chart and a table. A chosen show wins. */
+export function slideShow(slide: Pick<SourceSlide, "show" | "chart" | "table">): SlideShow {
+  if (slide.show) return slide.show;
+  if (slide.chart && slide.table) return "both";
+  if (slide.table && !slide.chart) return "table";
+  return "chart";
+}
+
+/** A native chart can flip. A picture of a chart cannot. */
+export function canFlip(slide: SourceSlide): boolean {
+  return Boolean(slide.chart && slide.chart.series.some((series) => series.values.length > 0));
+}
+
+/** The written table, or the chart's own cells when the file stored no table. */
+export function tableFromSlide(slide: SourceSlide): SourceTable | null {
+  if (slide.table && slide.table.rows.length > 0) return slide.table;
+  const chart = slide.chart;
+  if (!chart || chart.categories.length === 0 || chart.series.length === 0) return null;
+  return {
+    headers: ["", ...chart.series.map((series) => series.name.trim() || "Value")],
+    rows: chart.categories.map((category, index) => [
+      category,
+      ...chart.series.map((series) => formatPoint(series.values[index] ?? 0)),
+    ]),
+  };
+}
+
+export function replaceSlides(deck: SourceDeck, slides: SourceSlide[]): SourceDeck {
+  const next = reindex(slides);
+  return { ...deck, slides: next, intent: next.length ? intentOf(next, deck.title) : "" };
+}
+
+function locate(slides: SourceSlide[], index: number): number {
+  const found = slides.findIndex((slide) => slide.index === index);
+  return found >= 0 ? found : Math.min(Math.max(slides.length - 1, 0), Math.max(0, index - 1));
+}
+
+function clonePiece(piece: SlidePiece): SlidePiece {
+  if (piece.kind === "list") return { ...piece, points: [...piece.points] };
+  return { ...piece };
+}
+
+function cloneSlide(slide: SourceSlide): SourceSlide {
+  return {
+    ...slide,
+    numbers: slide.numbers.map((item) => ({ ...item })),
+    chart: slide.chart
+      ? {
+          ...slide.chart,
+          categories: [...slide.chart.categories],
+          series: slide.chart.series.map((series) => ({ ...series, values: [...series.values] })),
+        }
+      : null,
+    images: slide.images.map((image) => ({ ...image })),
+    table: slide.table ? { headers: [...slide.table.headers], rows: slide.table.rows.map((row) => [...row]) } : null,
+    pieces: slide.pieces?.map(clonePiece),
+    pace: undefined,
+  };
+}
+
+function bodyPieces(slide: SourceSlide): SlidePiece[] {
+  if ((slide.pieces ?? []).length) return (slide.pieces ?? []).map(clonePiece);
+  const text = slide.context.trim();
+  return text ? [{ kind: "prose", text }] : [];
+}
+
+function reshape(slide: SourceSlide): SourceSlide[] {
+  return markPace(spreadPieces(spreadPictures([slide])));
+}
+
+function kept(slides: SourceSlide[], index: number, note: string): SlideEdit {
+  return { slides, index: Math.max(0, Math.min(index, slides.length - 1)), note };
+}
+
+/** The title slide stays first. Other slides trade places. */
+export function moveSlide(slides: SourceSlide[], index: number, direction: -1 | 1): SlideEdit {
+  const at = locate(slides, index);
+  const to = at + direction;
+  if (at <= 0 || to <= 0 || to >= slides.length) return kept(slides, at, "The title slide stays first.");
+  const next = slides.slice();
+  const [item] = next.splice(at, 1);
+  next.splice(to, 0, item!);
+  return { slides: next, index: to, note: direction < 0 ? "Moved up." : "Moved down." };
+}
+
+/** A copy is inserted after the slide. The copy is not a second title slide. */
+export function duplicateSlide(slides: SourceSlide[], index: number): SlideEdit {
+  const at = locate(slides, index);
+  const source = slides[at];
+  if (!source) return kept(slides, 0, "That slide is gone.");
+  const copy = cloneSlide(source);
+  const next = slides.slice();
+  next.splice(at + 1, 0, copy);
+  return { slides: next, index: at + 1, note: "Duplicated." };
+}
+
+/** The title slide stays. Any other slide can leave the deck. */
+export function deleteSlide(slides: SourceSlide[], index: number): SlideEdit {
+  const at = locate(slides, index);
+  if (at <= 0 || slides.length < 2) return kept(slides, at, "The title slide stays.");
+  const next = slides.filter((_, position) => position !== at);
+  return { slides: next, index: Math.min(at, next.length - 1), note: "Deleted." };
+}
+
+/** The first title stays. Two charts stay apart. A full result continues. */
+export function mergeSlides(slides: SourceSlide[], index: number): SlideEdit {
+  const at = locate(slides, index);
+  const left = slides[at];
+  const right = slides[at + 1];
+  if (!left || !right) return kept(slides, at, "There is no next slide.");
+  if (at <= 0) return kept(slides, at, "The title slide stays the title.");
+  if (left.chart && right.chart) return kept(slides, at, "Two charts stay on their own slides.");
+  const rightTitle = right.title.trim();
+  const keepTitle = rightTitle && rightTitle !== left.title.trim() ? rightTitle : "";
+  const pieces = [
+    ...bodyPieces(left),
+    ...(keepTitle ? [{ kind: "prose" as const, text: keepTitle }] : []),
+    ...bodyPieces(right),
+  ];
+  const context = [left.context.trim(), keepTitle, right.context.trim()].filter(Boolean).join("\n");
+  const chart = left.chart ?? right.chart;
+  const table = (left.chart ? left.table : right.table) ?? left.table ?? right.table;
+  const images = [...left.images, ...right.images];
+  const merged = cloneSlide({
+    ...left,
+    context,
+    pieces,
+    images,
+    chart,
+    table,
+    numbers: [...left.numbers, ...right.numbers],
+    extraCharts: left.extraCharts + right.extraCharts,
+    picture: images.length > 0 && `${left.title} ${context}`.trim().length < 12 && !chart && left.numbers.length + right.numbers.length === 0,
+    show: left.show ?? right.show,
+    pace: undefined,
+  });
+  const shaped = reshape(merged);
+  const next = [...slides.slice(0, at), ...shaped, ...slides.slice(at + 2)];
+  const note = shaped.length > 1
+    ? "Merged. It was too full, so it continues. Nothing was rewritten."
+    : "Merged. Nothing was rewritten.";
+  return { slides: next, index: at, note };
+}
+
+/** Pictures are added as themselves. A fifth picture continues on the next slide. */
+export function addSlidePictures(slides: SourceSlide[], index: number, images: SourceImage[]): SlideEdit {
+  const at = locate(slides, index);
+  const slide = slides[at];
+  if (!slide || images.length === 0) return kept(slides, at, "Use a PNG or JPEG.");
+  const pieces = slide.pieces ?? [];
+  const structured = pieces.some((piece) => piece.kind === "card" || piece.kind === "list");
+  const crowded = structured && pieceDensity(pieces, slide.title, isContinued(slide)) !== "light";
+  if (crowded && slide.images.length === 0) {
+    const follower = reshape({
+      ...cloneSlide(slide),
+      context: "Continued.",
+      pieces: [],
+      numbers: [],
+      chart: null,
+      table: null,
+      images,
+      extraCharts: 0,
+      picture: images.length > 0,
+      show: undefined,
+      pace: "Continued. The pictures stay.",
+    });
+    const next = [...slides.slice(0, at + 1), ...follower, ...slides.slice(at + 1)];
+    return { slides: next, index: at + 1, note: "The picture continues on the next slide. The words stay." };
+  }
+  const merged = { ...cloneSlide(slide), images: [...slide.images, ...images], picture: false, pace: undefined };
+  const shaped = reshape(merged);
+  const next = [...slides.slice(0, at), ...shaped, ...slides.slice(at + 1)];
+  const note = shaped.length > 1
+    ? "Too many pictures for one slide. They continue on the next. The pictures stay."
+    : images.length === 1 ? "Picture added." : `${images.length} pictures added.`;
+  return { slides: next, index: at, note };
+}
+
+export function removeSlidePicture(slides: SourceSlide[], index: number, imageIndex: number): SlideEdit {
+  const at = locate(slides, index);
+  const slide = slides[at];
+  if (!slide || imageIndex < 0 || imageIndex >= slide.images.length) return kept(slides, at, "That picture is already gone.");
+  const images = slide.images.filter((_, position) => position !== imageIndex);
+  const words = `${slide.title} ${slide.context}`.trim().length;
+  const next = slides.map((item, position) => position === at
+    ? { ...item, images, picture: images.length > 0 && words < 12 && !item.chart && item.numbers.length === 0, pace: undefined }
+    : item);
+  return { slides: next, index: at, note: "Picture removed." };
+}
+
+export function showSlide(slides: SourceSlide[], index: number, show: SlideShow): SlideEdit {
+  const at = locate(slides, index);
+  const slide = slides[at];
+  if (!slide || !canFlip(slide)) return kept(slides, at, "A picture of a chart stays a picture.");
+  const next = slides.map((item, position) => (position === at ? { ...item, show } : item));
+  const note = show === "table" ? "Shown as a table. The cells stay." : show === "chart" ? "Shown as a chart. The cells stay." : "Chart and table.";
+  return { slides: next, index: at, note };
 }
 
 export type SlideImage = {

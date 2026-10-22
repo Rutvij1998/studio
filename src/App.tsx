@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { viewBook, type Book, type FactGroup, type Proof, type SourceSlide, type Story } from "./book";
+import { viewBook, type Book, type FactGroup, type Proof, type SourceDeck, type SourceImage, type SourceSlide, type Story } from "./book";
 import { deckBlob } from "./deck";
 import { DEFAULT_OPTIONS, type DeckOptions } from "./options";
 import { emptyBook } from "./parse";
@@ -9,7 +9,8 @@ import { factReadLines } from "./facts";
 import { gridChartNote, gridProgress } from "./grid";
 import { rateOutlook, seriesProgressList, trackNote } from "./reading";
 import { markRequest } from "./mark";
-import { chartSentence, formatPoint, readSourceDeck, slideRead, sourceSummary } from "./sourceDeck";
+import { addSlidePictures, canFlip, chartSentence, deleteSlide, duplicateSlide, formatPoint, mergeSlides, moveSlide, readSourceDeck, removeSlidePicture, replaceSlides, showSlide, slideRead, slideShow, sourceSummary, type SlideEdit } from "./sourceDeck";
+import { GUIDE_BEATS, GUIDE_MS, HomeBeats, HomePreview } from "./homeGuide";
 
 const W = 1280;
 const H = 720;
@@ -48,6 +49,7 @@ export function App() {
   const [understood, setUnderstood] = useState("");
   const [issue, setIssue] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [presenting, setPresenting] = useState(false);
   const [deckName, setDeckName] = useState<string | null>(null);
   const view = useMemo(() => viewBook(book), [book]);
   const slides = useMemo(() => slidesFor(book), [book]);
@@ -62,18 +64,24 @@ export function App() {
     const onKey = (event: KeyboardEvent) => {
       const tag = (event.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
-      if (event.key === "ArrowRight") {
+      if (presenting && event.key === "Escape") {
+        event.preventDefault();
+        setPresenting(false);
+        return;
+      }
+      const forward = event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "PageDown" || (presenting && event.key === " ");
+      const back = event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "PageUp";
+      if (forward) {
         event.preventDefault();
         setIndex((current) => Math.min(slides.length - 1, current + 1));
-      }
-      if (event.key === "ArrowLeft") {
+      } else if (back) {
         event.preventDefault();
         setIndex((current) => Math.max(0, current - 1));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [mode, slides.length]);
+  }, [mode, slides.length, presenting]);
 
   const patch = (partial: Partial<Book>) => setBook((current) => ({ ...current, ...partial }));
 
@@ -170,8 +178,11 @@ export function App() {
           <strong>{book.client || deckName || "Untitled deck"}</strong>
         </div>
         <div className="top-side">
-          <button type="button" className="ghost" onClick={() => { setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
+          <button type="button" className="ghost" onClick={() => { setPresenting(false); setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
             New deck
+          </button>
+          <button type="button" className="ghost" onClick={() => setPresenting(true)} disabled={slides.length === 0}>
+            Present
           </button>
           <button type="button" className="download" aria-label="Download PowerPoint" onClick={() => void downloadDeck()} disabled={saving}>
             {saving ? "Saving" : "Download"}
@@ -217,6 +228,18 @@ export function App() {
           <div className="panel-body">
             <p className="panel-kicker">{slide.form}</p>
             <h2>{slide.label}</h2>
+            {slide.id === "origin" && book.sourceDeck ? (
+              <SlideTools
+                deck={book.sourceDeck}
+                track={slide.track ?? 1}
+                onChange={(next, focus, message) => {
+                  patch({ sourceDeck: next });
+                  setIndex(focus);
+                  setNote(message);
+                  setUnderstood(`${sourceSummary(next)}${book.logo ? ` The ${book.client} mark is on the cover.` : ""}`);
+                }}
+              />
+            ) : null}
             <Look options={options} setOptions={setOptions} listening={false} mix={false} />
             {understood && <p className="chart-note">{understood}</p>}
             <Editor slideId={slide.id} trackIndex={slide.track ?? 0} book={book} rate={view.rate} peerRate={view.peerRate} patch={patch} />
@@ -242,6 +265,128 @@ export function App() {
             {issue && <p className="issue">{issue}</p>}
           </div>
         </aside>
+      </div>
+      {presenting && slide ? (
+        <PresentDeck index={index} count={slides.length} onClose={() => setPresenting(false)}>
+          <SlideFrame book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
+        </PresentDeck>
+      ) : null}
+    </div>
+  );
+}
+
+function PresentDeck({
+  children,
+  index,
+  count,
+  onClose,
+}: {
+  children: ReactNode;
+  index: number;
+  count: number;
+  onClose: () => void;
+}) {
+  const [scale, setScale] = useState(1);
+  useEffect(() => {
+    const measure = () => setScale(Math.max(0.2, Math.min(window.innerWidth / W, window.innerHeight / H)));
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+  return (
+    <div className="present" role="dialog" aria-modal="true" aria-label="Presentation">
+      <div className="present-frame" style={{ width: W * scale, height: H * scale }}>
+        <div className="fit-inner" style={{ transform: `scale(${scale})` }}>{children}</div>
+      </div>
+      <p className="present-count">{index + 1} / {count}</p>
+      <button type="button" className="present-exit" onClick={onClose}>Close</button>
+    </div>
+  );
+}
+
+function readPicture(file: File): Promise<SourceImage | null> {
+  const mime = file.type === "image/png" ? "image/png" as const : file.type === "image/jpeg" ? "image/jpeg" as const : null;
+  if (!mime) return Promise.resolve(null);
+  return file.arrayBuffer().then((buffer) => {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    for (let cursor = 0; cursor < bytes.length; cursor += 0x8000) binary += String.fromCharCode(...bytes.subarray(cursor, cursor + 0x8000));
+    return { mime, dataUrl: `data:${mime};base64,${btoa(binary)}` };
+  });
+}
+
+function SlideTools({
+  deck,
+  track,
+  onChange,
+}: {
+  deck: SourceDeck;
+  track: number;
+  onChange: (deck: SourceDeck, index: number, note: string) => void;
+}) {
+  const slide = deck.slides.find((item) => item.index === track) ?? deck.slides[Math.max(0, track - 1)];
+  if (!slide) return null;
+  const at = deck.slides.findIndex((item) => item.index === slide.index);
+  const apply = (edit: SlideEdit) => onChange(replaceSlides(deck, edit.slides), edit.index, edit.note);
+  const title = at <= 0;
+  const last = at >= deck.slides.length - 1;
+  return (
+    <div className="slide-tools">
+      <div className="slide-actions" role="group" aria-label="Arrange">
+        <button type="button" onClick={() => apply(moveSlide(deck.slides, slide.index, -1))} disabled={title || at <= 1}>Up</button>
+        <button type="button" onClick={() => apply(moveSlide(deck.slides, slide.index, 1))} disabled={title || last}>Down</button>
+        <button type="button" onClick={() => apply(duplicateSlide(deck.slides, slide.index))}>Duplicate</button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!window.confirm("Delete this slide?")) return;
+            apply(deleteSlide(deck.slides, slide.index));
+          }}
+          disabled={title}
+        >
+          Delete
+        </button>
+        <button type="button" onClick={() => apply(mergeSlides(deck.slides, slide.index))} disabled={title || last}>Merge with next</button>
+      </div>
+      {canFlip(slide) ? (
+        <div className="show-switch" role="group" aria-label="Show the numbers">
+          {(["chart", "table", "both"] as const).map((mode) => (
+            <button key={mode} type="button" aria-pressed={slideShow(slide) === mode} onClick={() => apply(showSlide(deck.slides, slide.index, mode))}>
+              {mode === "both" ? "Both" : mode === "chart" ? "Chart" : "Table"}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <div className="picture-row">
+        <label className="file-add">
+          Add a picture
+          <input
+            type="file"
+            accept="image/png,image/jpeg,.png,.jpg,.jpeg"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              event.target.value = "";
+              if (!file) return;
+              void readPicture(file).then((image) => {
+                if (!image) {
+                  onChange(deck, at, "Use a PNG or JPEG.");
+                  return;
+                }
+                apply(addSlidePictures(deck.slides, slide.index, [image]));
+              });
+            }}
+          />
+        </label>
+        {slide.images.length > 0 ? (
+          <ul>
+            {slide.images.map((image, imageIndex) => (
+              <li key={`${image.mime}-${imageIndex}`}>
+                <img src={image.dataUrl} alt="" />
+                <button type="button" onClick={() => apply(removeSlidePicture(deck.slides, slide.index, imageIndex))}>Remove</button>
+              </li>
+            ))}
+          </ul>
+        ) : null}
       </div>
     </div>
   );
@@ -853,6 +998,17 @@ function Home({
   busyLabel: string;
 }) {
   const [over, setOver] = useState(false);
+  const [beat, setBeat] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const reduced = useRef(false);
+  useEffect(() => {
+    reduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }, []);
+  useEffect(() => {
+    if (paused || reduced.current) return;
+    const timer = window.setTimeout(() => setBeat((current) => (current + 1) % GUIDE_BEATS.length), GUIDE_MS);
+    return () => window.clearTimeout(timer);
+  }, [beat, paused]);
   return (
     <div className="home">
       <header className="home-bar">
@@ -861,51 +1017,23 @@ function Home({
           <strong>Studio</strong>
         </div>
       </header>
-      <main className="home-main">
-        <div className="home-lead">
+      <main className="home-stage" aria-labelledby="home-title">
+        <div className="home-hero">
           <p className="home-kicker">Restyle</p>
-          <h1>
-            <span>Drop the deck.</span>
-            <span>Leave with a better one.</span>
+          <h1 id="home-title">
+            Drop the deck.
+            <span>
+              Leave with a better one<span className="home-dot">.</span>
+            </span>
           </h1>
-          <p className="home-lede">
-            Upload a PowerPoint. Every slide stays. Pictures stay. A table of numbers is drawn as a chart, and the table stays on the slide.
-          </p>
-        </div>
-        <div className="home-aside">
-          <ol className="home-steps">
-            <li>
-              <b>01</b>
-              <span>
-                <strong>Upload the deck</strong>
-                <span>One PowerPoint. Nothing else is read.</span>
-              </span>
-            </li>
-            <li>
-              <b>02</b>
-              <span>
-                <strong>Keep the pictures</strong>
-                <span>A bar chart saved as an image stays. So does every other picture.</span>
-              </span>
-            </li>
-            <li>
-              <b>03</b>
-              <span>
-                <strong>Download</strong>
-                <span>The words stay. Figures and chart data become visuals.</span>
-              </span>
-            </li>
-          </ol>
-        </div>
-        <form
-          className="composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const file = files[0]?.file;
-            if (file) void addFiles([file]);
-          }}
-        >
-          <div className="composer-files">
+          <form
+            className="home-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const file = files[0]?.file;
+              if (file) void addFiles([file]);
+            }}
+          >
             <label
               className={`lane${over ? " is-over" : ""}`}
               onDragEnter={(event) => {
@@ -949,14 +1077,15 @@ function Home({
                 ))}
               </ul>
             )}
-          </div>
-          {issue && <p className="home-issue">{issue}</p>}
-          <div className="composer-actions">
-            <button className="build" type="submit" disabled={busy || files.length === 0}>
+            {issue && <p className="home-issue">{issue}</p>}
+            <button className="home-start" type="submit" disabled={busy || files.length === 0}>
               {busy ? busyLabel : "Restyle the deck"}
+              {!busy && <span aria-hidden="true">→</span>}
             </button>
-          </div>
-        </form>
+          </form>
+        </div>
+        <HomePreview index={beat} onPause={setPaused} />
+        <HomeBeats index={beat} onPick={setBeat} onPause={setPaused} />
       </main>
     </div>
   );

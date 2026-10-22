@@ -1,6 +1,7 @@
 import PptxGenJS from "pptxgenjs";
+import type { SourceSlide } from "./book.ts";
 import { readDeckText } from "./parse.ts";
-import { bulletLines, chartSentence, copyBlocks, isSource, leadCopy, piecesOf, presentKind, readSourceDeck, slideRead, sourceSummary } from "./sourceDeck.ts";
+import { addSlidePictures, bulletLines, canFlip, chartSentence, copyBlocks, deleteSlide, duplicateSlide, imageSize, isSource, leadCopy, mergeSlides, moveSlide, pictureLayout, pieceDensity, piecesOf, presentKind, readSourceDeck, showSlide, slideRead, slideShow, sourceSummary, tableFromSlide } from "./sourceDeck.ts";
 
 const failures: string[] = [];
 const expect = (label: string, actual: unknown, wanted: unknown) => {
@@ -342,6 +343,135 @@ async function cards() {
 }
 
 await cards();
+
+expect("density light", pieceDensity([{ kind: "prose", text: "One clear point." }], "Hello"), "light");
+const heavyPoints = Array.from({ length: 24 }, (_, index) => `Keep this written point ${"x".repeat(index + 1)}`);
+expect("density over", pieceDensity([{ kind: "list", title: "Plan", points: heavyPoints }], "Too much"), "over");
+
+async function pace() {
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  pres.layout = "DECK";
+  const slide = pres.addSlide();
+  slide.addText("One idea", { x: 0.5, y: 0.3, w: 10, h: 0.4, fontSize: 28, fontFace: "Calibri" });
+  slide.addText("A single sentence stays.", { x: 0.5, y: 1, w: 10, h: 0.4, fontSize: 16, fontFace: "Calibri" });
+  const light = await readSourceDeck(await pres.write({ outputType: "arraybuffer" }) as ArrayBuffer, "light.pptx");
+  const lightSlide = light.deck.slides[1];
+  includes("light note", lightSlide ? slideRead(lightSlide) : "", "Left large");
+  expect("light stays one slide", light.deck.slides.length, 2);
+
+  const crowd = new PptxGenJS();
+  crowd.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  crowd.layout = "DECK";
+  const heavy = crowd.addSlide();
+  heavy.addText("Too much", { x: 0.5, y: 0.3, w: 10, h: 0.4, fontSize: 28, fontFace: "Calibri" });
+  heavy.addText(
+    heavyPoints.map((point) => ({ text: `• ${point}`, options: { breakLine: true } })),
+    { x: 0.5, y: 1, w: 10, h: 5, fontSize: 16, fontFace: "Calibri" },
+  );
+  const read = await readSourceDeck(await crowd.write({ outputType: "arraybuffer" }) as ArrayBuffer, "heavy.pptx");
+  expect("heavy split", read.deck.slides.length > 2, true);
+  const noted = read.deck.slides.find((item) => item.pace?.includes("Split into"));
+  includes("split note", noted ? slideRead(noted) : "", "Nothing was rewritten");
+  includes("split count", noted ? slideRead(noted) : "", "24 points");
+  const kept = read.deck.slides.flatMap((item) => (item.pieces ?? []).flatMap((piece) => (piece.kind === "list" ? piece.points : [])));
+  expect("points kept", kept.length, 24);
+  expect("first point", kept[0], heavyPoints[0]);
+  expect("last point", kept[23], heavyPoints[23]);
+  includes("deck split", sourceSummary(read.deck), "split so each one stays readable");
+}
+
+await pace();
+
+function blank(title: string, extra: Partial<SourceSlide> = {}): SourceSlide {
+  return {
+    index: 1,
+    title,
+    context: "",
+    numbers: [],
+    chart: null,
+    extraCharts: 0,
+    picture: false,
+    images: [],
+    table: null,
+    pieces: [],
+    ...extra,
+  };
+}
+
+function edits() {
+  const title = blank("Cover", { context: "Ada Lovelace" });
+  const one = blank("One", { pieces: [{ kind: "list", title: "", points: ["Alpha", "Beta"] }] });
+  const two = blank("Two", { pieces: [{ kind: "list", title: "", points: ["Gamma"] }] });
+  const deck = [title, one, two].map((slide, position) => ({ ...slide, index: position + 1 }));
+  const stayed = moveSlide(deck, 1, 1);
+  includes("title stays", stayed.note, "title slide stays first");
+  expect("title unmoved", stayed.slides[0]?.title, "Cover");
+  const moved = moveSlide(deck, 3, -1);
+  expect("moved title", moved.slides[1]?.title, "Two");
+  expect("moved neighbor", moved.slides[2]?.title, "One");
+  const copied = duplicateSlide(deck, 2);
+  expect("copy length", copied.slides.length, 4);
+  expect("copy title", copied.slides[2]?.title, "One");
+  const removed = deleteSlide(deck, 2);
+  expect("deleted length", removed.slides.length, 2);
+  expect("deleted kept", removed.slides[1]?.title, "Two");
+  includes("delete title", deleteSlide(deck, 1).note, "title slide stays");
+  const merged = mergeSlides(deck, 2);
+  includes("merge note", merged.note, "Nothing was rewritten");
+  const points = (merged.slides[1]?.pieces ?? []).flatMap((piece) => (piece.kind === "list" ? piece.points : []));
+  expect("merged points", points.includes("Alpha") && points.includes("Gamma"), true);
+  expect("merged title", merged.slides[1]?.title, "One");
+  const chart = { kind: "columns" as const, drawn: "", categories: ["Apr", "May"], series: [{ name: "Count", values: [3, 5] }] };
+  const table = { headers: ["", "Count"], rows: [["Apr", "3"], ["May", "~5"]] };
+  const left = blank("Bars", { chart, table });
+  const right = blank("More", { chart: { ...chart, categories: ["Jun"], series: [{ name: "Count", values: [8] }] } });
+  const pair = [title, left, right].map((slide, position) => ({ ...slide, index: position + 1 }));
+  const apart = mergeSlides(pair, 2);
+  includes("two charts", apart.note, "Two charts stay");
+  expect("charts remain", apart.slides.length, 3);
+  expect("can flip", canFlip(left), true);
+  expect("show both", slideShow(left), "both");
+  expect("shown table", showSlide(pair, 2, "table").slides[1]?.show, "table");
+  expect("tilde stays", tableFromSlide(left)?.rows[1]?.[1], "~5");
+  const picture = { mime: "image/png" as const, dataUrl: `data:${PNG}` };
+  const added = addSlidePictures(
+    [title, blank("Pictures")].map((slide, position) => ({ ...slide, index: position + 1 })),
+    2,
+    Array.from({ length: 5 }, () => picture),
+  );
+  expect("pictures split", added.slides.length > 2, true);
+  includes("pictures stay", added.note, "pictures stay");
+  const full = blank("Full", {
+    pieces: [{ kind: "list", title: "Plan", points: Array.from({ length: 24 }, (_, index) => `Keep this written point ${"x".repeat(index + 1)}`) }],
+  });
+  const followed = addSlidePictures([title, full].map((slide, position) => ({ ...slide, index: position + 1 })), 2, [picture]);
+  includes("picture continues", followed.note, "continues");
+  expect("words stay", (followed.slides[1]?.pieces ?? []).some((piece) => piece.kind === "list" && piece.points.length === 24), true);
+  expect("picture slide", followed.slides[2]?.images.length, 1);
+  expect("png size", imageSize(`data:${PNG}`)?.width, 1);
+  const shot = (width: number, height: number) => ({ dataUrl: pngBox(width, height) });
+  expect("one picture", pictureLayout([shot(800, 500)]), "solo");
+  expect("wide strips stack", pictureLayout([shot(800, 80), shot(780, 90), shot(760, 90)]), "stack");
+  expect("two shots sit together", pictureLayout([shot(900, 500), shot(700, 500)]), "pair");
+  expect("tall shots sit in a row", pictureLayout([shot(300, 700), shot(280, 640), shot(360, 500)]), "row");
+}
+
+function pngBox(width: number, height: number): string {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52]);
+  bytes[16] = (width >>> 24) & 255;
+  bytes[17] = (width >>> 16) & 255;
+  bytes[18] = (width >>> 8) & 255;
+  bytes[19] = width & 255;
+  bytes[20] = (height >>> 24) & 255;
+  bytes[21] = (height >>> 16) & 255;
+  bytes[22] = (height >>> 8) & 255;
+  bytes[23] = height & 255;
+  return `data:image/png;base64,${btoa(String.fromCharCode(...bytes))}`;
+}
+
+edits();
 
 if (failures.length) {
   console.error(failures.join("\n"));

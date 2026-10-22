@@ -9,7 +9,7 @@ import { chartFit, comboPair } from "./fit";
 import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, isGrid } from "./grid";
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesProgressList, trackNote, trackTotals } from "./reading";
-import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, copyBlocks, figureBody, formatPoint, isContinued, isSource, leadCopy, pieceBands, pieceFit, pieceFrame, plotMode, rowDisplay, slideRole, spareHeaders } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, copyBlocks, figureBody, formatPoint, imageSize, isContinued, isSource, leadCopy, pictureLayout, pieceBands, pieceFit, pieceFrame, plotMode, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide } from "./sourceDeck";
 
 const INK = "14003B";
 const BRAND = "3200BE";
@@ -131,54 +131,17 @@ function imageData(value: string): string | null {
   return `${match[1]};base64,${match[2]}`;
 }
 
-function rasterSize(dataUrl: string): { width: number; height: number } | null {
-  const payload = dataUrl.slice(dataUrl.indexOf(",") + 1);
-  const chars = Math.min(payload.length, 4096);
-  const slice = payload.slice(0, chars - (chars % 4));
-  let binary = "";
-  try {
-    binary = atob(slice);
-  } catch {
-    return null;
-  }
-  const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
-  if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes.length >= 24) {
-    const width = (bytes[16]! << 24) | (bytes[17]! << 16) | (bytes[18]! << 8) | bytes[19]!;
-    const height = (bytes[20]! << 24) | (bytes[21]! << 16) | (bytes[22]! << 8) | bytes[23]!;
-    return width > 0 && height > 0 ? { width, height } : null;
-  }
-  if (bytes[0] === 0x47 && bytes[1] === 0x49 && bytes.length >= 10) {
-    const width = bytes[6]! | (bytes[7]! << 8);
-    const height = bytes[8]! | (bytes[9]! << 8);
-    return width > 0 && height > 0 ? { width, height } : null;
-  }
-  if (bytes[0] === 0xff && bytes[1] === 0xd8) {
-    let cursor = 2;
-    while (cursor + 9 < bytes.length) {
-      if (bytes[cursor] !== 0xff) break;
-      const marker = bytes[cursor + 1] ?? 0;
-      if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
-        const height = ((bytes[cursor + 5] ?? 0) << 8) | (bytes[cursor + 6] ?? 0);
-        const width = ((bytes[cursor + 7] ?? 0) | 0) << 8 | (bytes[cursor + 8] ?? 0);
-        return width > 0 && height > 0 ? { width, height } : null;
-      }
-      const size = ((bytes[cursor + 2] ?? 0) << 8) | (bytes[cursor + 3] ?? 0);
-      if (size < 2) break;
-      cursor += 2 + size;
-    }
-  }
-  return null;
-}
-
 function placeKept(slide: Slide, images: SourceImage[], x: number, y: number, w: number, h: number) {
   const ready = images
     .slice(0, 4)
-    .map((image) => ({ data: imageData(image.dataUrl), size: rasterSize(image.dataUrl) }))
+    .map((image) => ({ data: imageData(image.dataUrl), size: imageSize(image.dataUrl) }))
     .filter((image): image is { data: string; size: { width: number; height: number } | null } => Boolean(image.data));
   if (ready.length === 0) return;
-  const cols = ready.length === 1 ? 1 : ready.length === 4 ? 2 : ready.length;
-  const rows = Math.ceil(ready.length / cols);
-  const gap = 0.12;
+  const layout = pictureLayout(images.slice(0, ready.length));
+  const count = ready.length;
+  const cols = layout === "pair" || layout === "grid" ? Math.min(2, count) : layout === "row" ? count : 1;
+  const rows = layout === "stack" ? count : Math.ceil(count / cols);
+  const gap = 0.16;
   const cellW = (w - gap * (cols - 1)) / cols;
   const cellH = (h - gap * (rows - 1)) / rows;
   ready.forEach((image, index) => {
@@ -186,13 +149,13 @@ function placeKept(slide: Slide, images: SourceImage[], x: number, y: number, w:
     const row = Math.floor(index / cols);
     const left = x + column * (cellW + gap);
     const top = y + row * (cellH + gap);
-    const ratio = image.size && image.size.width > 0 ? image.size.width / image.size.height : cellW / cellH;
+    const ratio = image.size && image.size.height > 0 ? image.size.width / image.size.height : cellW / cellH;
     const fittedW = Math.min(cellW, cellH * ratio);
-    const fittedH = fittedW / ratio;
+    const fittedH = Math.min(cellH, fittedW / ratio);
     slide.addImage({
       data: image.data,
       x: left + (cellW - fittedW) / 2,
-      y: top,
+      y: top + Math.max(0, (cellH - fittedH) / 2),
       w: fittedW,
       h: fittedH,
       altText: "Picture from the deck",
@@ -2109,7 +2072,8 @@ function addOrigin(pres: Pres, book: Book, index: number, type: (typeof SCALE)["
   const role = slideRole(source);
   const structured = (source.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list");
   if (role === "cover") addOriginCover(pres, book, source, type);
-  else if (role !== "chart" && structured && source.images.length === 0) addOriginPieces(pres, source, type);
+  else if (role !== "chart" && structured) addOriginPieces(pres, source, type);
+  else if (role === "chart" && source.chart && slideShow(source) === "table") addOriginTable(pres, source, type);
   else if (role === "chart" && source.chart) addOriginChart(pres, source, type);
   else if (role === "figures") addOriginNumbers(pres, source, type);
   else if (role === "pictures" && source.picture && source.images.length === 0) addOriginProse(pres, source, type, true);
@@ -2248,6 +2212,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
     }
     cursor += frame.inch(2);
   }
+  if (source.images.length && cursor < 6.3) placeKept(slide, source.images, x0, cursor, width, Math.max(0.8, 7.05 - cursor));
 }
 
 function addOriginCover(pres: Pres, book: Book, source: SourceSlide, type: (typeof SCALE)["m"]) {
@@ -2356,6 +2321,35 @@ function addOriginSheet(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
     const top = cursor + 0.06;
     placeKept(slide, images, 0.7, top, 12, 7.12 - top);
   }
+}
+
+function addOriginTable(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
+  const slide = pres.addSlide();
+  slide.background = { color: WHITE };
+  const table = tableFromSlide(source);
+  const pictures = source.images.length > 0;
+  let cursor = 0.42;
+  if (isContinued(source)) {
+    kicker(slide, "Continued", 0.55, cursor, "C23FC2", type.kicker);
+    cursor = 0.78;
+  }
+  slide.addText(source.title.trim() || "Table", {
+    x: 0.55,
+    y: cursor,
+    w: 12.2,
+    h: 0.5,
+    fontFace: "Calibri",
+    fontSize: type.title - 8,
+    bold: true,
+    color: INK,
+    margin: 0,
+    valign: "top",
+  });
+  cursor += 0.62;
+  if (source.context.trim()) cursor = placeCopy(slide, source.context, 0.55, cursor, 12.2, pictures ? 2.4 : 3.1);
+  const floor = pictures ? 5.35 : 6.9;
+  if (table) addSourceTable(slide, table, 0.55, cursor, 12.2, Math.max(1.2, floor - cursor));
+  if (pictures) placeKept(slide, source.images, 0.55, 5.5, 12.2, 1.55);
 }
 
 function addSourceTable(slide: Slide, table: SourceTable, x: number, y: number, w: number, h: number) {
@@ -2749,8 +2743,9 @@ function addOriginChart(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
     values: labels.map((_, index) => series.values[index] ?? 0),
   }));
   const table = source.table;
+  const beside = slideShow(source) === "chart" ? null : table;
   const side = source.images.length > 0 && !inline;
-  const chartW = !inline && (table || side) ? 8.05 : 12.2;
+  const chartW = !inline && (beside || side) ? 8.05 : 12.2;
   const colors = data.length === 1 ? ["3200BE"] : [...CHART_COLORS];
   if (mode === "score") drawScore(pres, slide, chart, table, 0.55, chartTop, chartW);
   else if (mode === "rank") drawRank(pres, slide, chart, table, 0.55, chartTop, chartW, chartH);
@@ -2811,7 +2806,7 @@ function addOriginChart(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
     source.extraCharts > 0 ? "Another chart is on this slide and is not drawn." : "",
     chartFoot(chart),
   ].filter(Boolean).join(" ");
-  if (!inline && table) addSourceTable(slide, table, 8.65, chartTop, 4.2, chartH);
+  if (!inline && beside) addSourceTable(slide, beside, 8.65, chartTop, 4.2, chartH);
   else if (side) placeKept(slide, source.images, 9.15, chartTop, 3.7, chartH);
   if (extra) {
     slide.addText(extra, {
