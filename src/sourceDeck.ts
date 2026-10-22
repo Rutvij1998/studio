@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import type { SourceChart, SourceDeck, SourceImage, SourceNumber, SourceSeries, SourceSlide, SourceTable } from "./book";
+import type { SlidePiece, SourceChart, SourceDeck, SourceImage, SourceNumber, SourceSeries, SourceSlide, SourceTable } from "./book";
 import { chartFit, isTimeLabels } from "./fit";
 import { pictureFromModel } from "./seen";
 
@@ -44,6 +44,44 @@ export function chartKindLabel(kind: SourceChart["kind"]): string {
   return "Donut";
 }
 
+export type PlotMode = "score" | "rank" | "matrix" | "trend" | "columns" | "stacked" | "donut" | "funnel";
+
+/** How a chart should be drawn. A short list is a score. Two series are a matrix. A line is a trend. */
+export function plotMode(chart: SourceChart): PlotMode {
+  if (chart.kind === "line") return "trend";
+  if (chart.kind === "donut") return "donut";
+  if (chart.kind === "funnel") return "funnel";
+  if (chart.kind === "stacked") return "stacked";
+  const years = chart.series.length >= 2 && chart.series.every((series) => /^(19|20)\d{2}$/.test(series.name.trim()));
+  if (years && chart.categories.length <= 8) return "columns";
+  if (chart.series.length >= 2) return "matrix";
+  if (chart.categories.length <= 5) return "score";
+  if (chart.kind === "bars" || chart.categories.length > 8) return "rank";
+  return "columns";
+}
+
+/** A heading only when it says more than the title. "Bars" is not a heading. */
+export function chartEyebrow(chart: SourceChart): string {
+  if (chart.drawn.startsWith("Month over month")) return "Month over month";
+  if (chart.drawn.startsWith("Day over day")) return "Day over day";
+  if (chart.drawn.startsWith("Year over year")) return "Year over year";
+  if (chart.kind === "funnel") return "Funnel";
+  if (chart.kind === "donut") return "Share";
+  if (chart.kind === "line") return "Trend";
+  const names = chart.series
+    .map((series) => series.name.trim())
+    .filter((name) => name && !/^(count|value|total|series)$/i.test(name));
+  if (names.length >= 2) return names.slice(0, 3).join("  ·  ");
+  return "";
+}
+
+/** Columns in the table that the chart series do not already draw. */
+export function spareHeaders(table: SourceTable | null, series: { name: string }[]): string[] {
+  if (!table) return [];
+  const used = new Set(series.map((item) => item.name.trim()));
+  return table.headers.slice(1).map((header) => header.trim()).filter((header) => header && !used.has(header));
+}
+
 /** The short name on the slide. Year, month, and day lines say so. */
 export function chartKicker(chart: SourceChart): string {
   if (chart.drawn.startsWith("Month over month")) return "Month over month";
@@ -70,6 +108,30 @@ export function axisMax(max: number): number {
   const unit = max / power;
   const nice = unit <= 1 ? 1 : unit <= 2 ? 2 : unit <= 5 ? 5 : 10;
   return nice * power;
+}
+
+/** Keep a zero baseline, unless every point sits in a narrow band and a zero axis would flatten the line. */
+export function axisSpan(values: number[]): { min: number; max: number } {
+  const flat = values.filter((value) => Number.isFinite(value)).map((value) => Math.max(0, value));
+  const peak = Math.max(0, ...flat);
+  const floor = flat.length ? Math.min(...flat) : 0;
+  const max = axisMax(peak);
+  if (peak > 0 && floor > peak * 0.6 && peak - floor < peak * 0.45) {
+    const pad = Math.max(peak * 0.04, (peak - floor) * 0.35);
+    const step = max >= 100 ? 10 : max >= 20 ? 5 : 1;
+    const min = Math.floor(Math.max(0, floor - pad) / step) * step;
+    return { min, max };
+  }
+  return { min: 0, max };
+}
+
+/** Keep the honest footnotes. Drop the sentence that only names the chart type. */
+export function chartFoot(chart: SourceChart): string {
+  return chart.drawn
+    .split(/(?<=\.)\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => /tilde|total stays|first \d+|not drawn|another chart/i.test(sentence))
+    .join(" ");
 }
 
 export function chartSentence(chart: SourceChart): string {
@@ -108,6 +170,9 @@ export function slideRead(slide: SourceSlide): string {
       ? `${count} ${count === 1 ? "picture stays" : "pictures stay"} on this slide.`
       : "This slide is a picture. No title, figure, or chart was stored as text.";
   }
+  if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list") && slide.images.length === 0) {
+    return "The points on this slide, kept as written.";
+  }
   if (slide.numbers.length > 0) {
     return slide.numbers.map((number) => (number.label ? `${number.label}: ${number.display}` : number.display)).join(". ") + ".";
   }
@@ -129,8 +194,9 @@ export function formLabel(slide: SourceSlide): string {
   const kind = presentKind(slide);
   if (kind === "cover") return "Opens";
   if (kind === "chart" && slide.chart) return chartKindLabel(slide.chart.kind);
-  if (kind === "numbers") return "Figures";
   if (kind === "picture") return "Picture";
+  if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list")) return "Context";
+  if (kind === "numbers") return "Figures";
   return "Context";
 }
 
@@ -244,13 +310,89 @@ function bulletParagraph(block: string): boolean {
 function textsOf(xml: string, breaks = true, markBullets = false): string {
   const paragraphs = [...xml.matchAll(/<a:p\b[\s\S]*?<\/a:p>/g)];
   const lineOf = (block: string) => {
-    const text = [...block.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((match) => decode(match[1] ?? "")).join("").replace(/[ \t]+/g, " ").trim();
-    if (!text) return "";
-    return markBullets && bulletParagraph(block) ? `• ${text}` : text;
+    const pieces = block.split(/<a:br\b[^>]*\/>/);
+    const lines = pieces.map((piece) => {
+      const runs = [...piece.matchAll(/<a:t[^>]*>([^<]*)<\/a:t>/g)].map((match) => decode(match[1] ?? ""));
+      let text = "";
+      for (const run of runs) {
+        if (!run) continue;
+        if (text && /[\p{L}\p{N}]$/u.test(text) && /^[\p{L}\p{N}]/u.test(run)) text += " ";
+        text += run;
+      }
+      text = text.replace(/[ \t]+/g, " ").trim();
+      if (!text) return "";
+      return markBullets && bulletParagraph(block) && !/^[•●▪‣]/.test(text) ? `• ${text}` : text;
+    }).filter(Boolean);
+    return lines.join(breaks ? "\n" : " ");
   };
   if (!paragraphs.length) return lineOf(xml);
   const lines = paragraphs.map((paragraph) => lineOf(paragraph[0])).filter(Boolean);
   return lines.join(breaks ? "\n" : " ");
+}
+
+export type CopyBlock = { kind: "prose"; text: string } | { kind: "list"; points: string[] };
+
+/** Keep a lead sentence, then a real list. A line break or a bullet mark starts the next point. */
+export function copyBlocks(text: string): CopyBlock[] {
+  const source = text.split(/\n/).flatMap((line) => {
+    const trimmed = line.trim();
+    const marks = trimmed.match(/[•●▪‣]/g)?.length ?? 0;
+    if (marks < 2) return [trimmed];
+    const parts = trimmed.split(/\s*[•●▪‣]\s*/).map((part) => part.trim()).filter(Boolean);
+    if (/^[•●▪‣]/.test(trimmed)) return parts.map((part) => `• ${part}`);
+    const [head, ...rest] = parts;
+    return [head ?? "", ...rest.map((part) => `• ${part}`)].filter(Boolean);
+  }).map((line) => line.trim()).filter((line) => line && line !== CONTINUED);
+  const blocks: CopyBlock[] = [];
+  let prose: string[] = [];
+  let points: string[] = [];
+  let bullets: string[] = [];
+  const flushProse = () => {
+    if (!prose.length) return;
+    blocks.push({ kind: "prose", text: prose.join("\n") });
+    prose = [];
+  };
+  const flushPoints = () => {
+    if (points.length >= 3) {
+      flushProse();
+      blocks.push({ kind: "list", points });
+    } else if (points.length) prose.push(...points);
+    points = [];
+  };
+  const flushBullets = () => {
+    if (!bullets.length) return;
+    const items = bullets;
+    bullets = [];
+    flushPoints();
+    if (items.length >= 2) {
+      flushProse();
+      blocks.push({ kind: "list", points: items });
+    } else prose.push(...items);
+  };
+  for (const line of source) {
+    if (/^[•●▪‣]/.test(line)) {
+      flushPoints();
+      bullets.push(line.replace(/^[•●▪‣]\s*/, "").trim());
+      continue;
+    }
+    flushBullets();
+    if (line.length <= 72 && /[.!?]$/.test(line)) {
+      points.push(line);
+      continue;
+    }
+    flushPoints();
+    prose.push(line);
+  }
+  flushBullets();
+  flushPoints();
+  flushProse();
+  return blocks;
+}
+
+/** The words under a figure, without repeating the number already drawn as the hero. */
+export function figureBody(slide: SourceSlide): string {
+  const shown = new Set(slide.numbers.map((number) => number.display.trim()).filter(Boolean));
+  return slide.context.split("\n").filter((line) => !shown.has(line.trim())).join("\n");
 }
 
 type Block = { role: "title" | "body"; text: string };
@@ -603,6 +745,310 @@ function runningFooter(slides: SourceSlide[]): string {
   return top[0];
 }
 
+const STAT_LINE = /^((?:[$£€]\s*)?\d[\d,]*(?:\.\d+)?(?:%|\+|(?:\s*[MKmk]))?)\s+(.+)$/;
+
+function asList(text: string): SlidePiece | null {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  const points = lines.filter((line) => /^[•●▪‣]/.test(line)).map((line) => line.replace(/^[•●▪‣]\s*/, "").trim()).filter(Boolean);
+  if (points.length < 2) return null;
+  return { kind: "list", title: lines.filter((line) => !/^[•●▪‣]/.test(line)).join("\n"), points };
+}
+
+function asCard(text: string): SlidePiece | null {
+  const lines = text.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (!lines.length || lines.length > 4) return null;
+  if (lines.some((line) => /^[•●▪‣]/.test(line) || line.length > 120)) return null;
+  const head = lines[0] ?? "";
+  if (head.length > 52 || /[.!?]$/.test(head)) return null;
+  if (lines.length === 1 && head.length > 36) return null;
+  let title = head;
+  let rest = lines.slice(1);
+  const second = rest[0] ?? "";
+  if (rest.length >= 2 && second.length <= 32 && !/[.!?]$/.test(second) && !STAT_LINE.test(head)) {
+    title = `${head}\n${second}`;
+    rest = rest.slice(1);
+  }
+  const stat = head.match(STAT_LINE);
+  return {
+    kind: "card",
+    title,
+    detail: rest.join("\n"),
+    display: stat ? (stat[1] ?? "").replace(/\s+/g, "") : "",
+    label: stat ? (stat[2] ?? "").trim() : "",
+  };
+}
+
+function coalesce(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  let pending: string[] = [];
+  const flush = () => {
+    if (pending.length >= 3) out.push({ kind: "list", title: "", points: [...pending] });
+    else pending.forEach((text) => out.push({ kind: "prose", text }));
+    pending = [];
+  };
+  for (const piece of pieces) {
+    const sentence = piece.kind === "prose" && !piece.text.includes("\n") && piece.text.length <= 90 && /[.!?]$/.test(piece.text);
+    if (sentence && piece.kind === "prose") {
+      pending.push(piece.text);
+      continue;
+    }
+    flush();
+    out.push(piece);
+  }
+  flush();
+  return out;
+}
+
+/** Turn each source shape into a card, a list, or a sentence. A bare page number is dropped. */
+export function piecesOf(groups: string[]): SlidePiece[] {
+  const pieces: SlidePiece[] = [];
+  for (const group of groups) {
+    const text = group.trim();
+    if (!text || /^\d{1,2}$/.test(text)) continue;
+    const list = asList(text);
+    if (list) {
+      pieces.push(list);
+      continue;
+    }
+    const card = asCard(text);
+    if (card) {
+      pieces.push(card);
+      continue;
+    }
+    pieces.push({ kind: "prose", text });
+  }
+  return coalesce(pieces);
+}
+
+type CardPiece = Extract<SlidePiece, { kind: "card" }>;
+type ListPiece = Extract<SlidePiece, { kind: "list" }>;
+
+export type PieceBand =
+  | { kind: "prose"; text: string; height: number }
+  | { kind: "lists"; items: ListPiece[]; height: number }
+  | { kind: "cards"; items: CardPiece[]; height: number; tone: "stat" | "tiles" | "chips" };
+
+function cardTone(item: CardPiece): "stat" | "tiles" | "chips" {
+  if (item.display) return "stat";
+  if (!item.detail) return "chips";
+  return "tiles";
+}
+
+function wrapLines(text: string, width: number): number {
+  if (!text.trim()) return 0;
+  return text.split("\n").reduce((total, line) => total + Math.max(1, Math.ceil(line.length / width)), 0);
+}
+
+export type PieceFit = "read" | "roomy";
+
+type PieceType = {
+  title: number;
+  lead: number;
+  bullet: number;
+  stat: number;
+  statLabel: number;
+  statBody: number;
+  cardTitle: number;
+  cardBody: number;
+  chip: number;
+  column: number;
+};
+
+/** Reading size is the floor. Roomy is one step up, and only when that step still fits. */
+export const PIECE_TYPE: Record<PieceFit, PieceType> = {
+  read: { title: 44, lead: 22, bullet: 20, stat: 56, statLabel: 18, statBody: 16, cardTitle: 20, cardBody: 16, chip: 18, column: 22 },
+  roomy: { title: 52, lead: 26, bullet: 24, stat: 72, statLabel: 20, statBody: 18, cardTitle: 22, cardBody: 18, chip: 20, column: 26 },
+};
+
+const CONTENT = 1168;
+const BAND_GAP = 16;
+const GRID_GAP = 14;
+const FIT_LIMIT = 700;
+
+function charsFor(font: number, width: number): number {
+  return Math.max(8, Math.floor(width / (font * 0.56)));
+}
+
+function textLines(text: string, font: number, width: number): number {
+  return wrapLines(text, charsFor(font, width));
+}
+
+function lineStack(lines: number, font: number, leading: number, gap: number): number {
+  if (lines <= 0) return 0;
+  return lines * Math.ceil(font * leading) + Math.max(0, lines - 1) * gap;
+}
+
+function columnWidth(across: number): number {
+  if (across <= 1) return CONTENT;
+  return (CONTENT - GRID_GAP * (across - 1)) / across;
+}
+
+function proseParts(text: string, type: PieceType): Array<{ kind: "prose"; text: string; height: number } | { kind: "list"; points: string[]; height: number }> {
+  return copyBlocks(text).map((block) => {
+    if (block.kind === "list") {
+      const lines = block.points.reduce((count, point) => count + textLines(point, type.bullet, CONTENT - 40), 0);
+      return { kind: "list" as const, points: block.points, height: lineStack(lines, type.bullet, 1.4, 8) };
+    }
+    return { kind: "prose" as const, text: block.text, height: lineStack(textLines(block.text, type.lead, CONTENT), type.lead, 1.4, 4) };
+  });
+}
+
+function proseHeight(text: string, type: PieceType): number {
+  const parts = proseParts(text, type);
+  return parts.reduce((total, part, index) => total + part.height + (index ? 10 : 0), 0);
+}
+
+function listHeight(items: ListPiece[], type: PieceType): number {
+  const width = columnWidth(items.length) - 40;
+  return Math.max(...items.map((item) => {
+    const titleLines = item.title ? textLines(item.title, type.column, columnWidth(items.length)) : 0;
+    const points = item.points.reduce((count, point) => count + textLines(point, type.bullet, width), 0);
+    return lineStack(titleLines, type.column, 1.25, 2) + (titleLines ? 10 : 0) + lineStack(points, type.bullet, 1.4, 8);
+  }));
+}
+
+function cardHeight(item: CardPiece, type: PieceType, across: number): number {
+  const inner = Math.max(80, columnWidth(across) - 36);
+  if (!item.detail && !item.display) return 28 + Math.ceil(type.chip * 1.35);
+  if (item.display) {
+    const detail = textLines(item.detail, type.statBody, inner);
+    return 42 + type.stat + lineStack(1, type.statLabel, 1.3, 0) + 8 + lineStack(detail, type.statBody, 1.4, 2);
+  }
+  const title = textLines(item.title, type.cardTitle, inner);
+  const detail = textLines(item.detail, type.cardBody, inner);
+  return 36 + lineStack(title, type.cardTitle, 1.3, 2) + 6 + lineStack(detail, type.cardBody, 1.4, 2);
+}
+
+function cardsHeight(items: CardPiece[], tone: "stat" | "tiles" | "chips", type: PieceType): number {
+  const across = tone === "chips" ? 4 : 3;
+  let height = 0;
+  for (let row = 0; row < items.length; row += across) {
+    const slice = items.slice(row, row + across);
+    const wide = slice.length === 1 ? 1 : across;
+    const rowH = Math.max(...slice.map((item) => cardHeight(item, type, wide)));
+    height += rowH + (height ? GRID_GAP : 0);
+  }
+  return height;
+}
+
+function bandHeight(band: PieceBand, type: PieceType): number {
+  if (band.kind === "prose") return proseHeight(band.text, type);
+  if (band.kind === "lists") return listHeight(band.items, type);
+  return cardsHeight(band.items, band.tone, type);
+}
+
+/** Group cards and lists the way the slide will draw them, with a height that must fit 720. */
+export function pieceBands(pieces: SlidePiece[]): PieceBand[] {
+  const bands: PieceBand[] = [];
+  for (let index = 0; index < pieces.length;) {
+    const piece = pieces[index];
+    if (!piece) break;
+    if (piece.kind === "list") {
+      let end = index + 1;
+      while (end < pieces.length && end - index < 3 && pieces[end]?.kind === "list") end += 1;
+      const items = pieces.slice(index, end).filter((item): item is ListPiece => item.kind === "list");
+      bands.push({ kind: "lists", items, height: listHeight(items, PIECE_TYPE.read) });
+      index = end;
+      continue;
+    }
+    if (piece.kind === "card") {
+      const tone = cardTone(piece);
+      let end = index + 1;
+      while (end < pieces.length) {
+        const next = pieces[end];
+        if (!next || next.kind !== "card" || cardTone(next) !== tone) break;
+        end += 1;
+      }
+      const items = pieces.slice(index, end).filter((item): item is CardPiece => item.kind === "card");
+      bands.push({ kind: "cards", items, height: cardsHeight(items, tone, PIECE_TYPE.read), tone });
+      index = end;
+      continue;
+    }
+    bands.push({ kind: "prose", text: piece.text, height: proseHeight(piece.text, PIECE_TYPE.read) });
+    index += 1;
+  }
+  return bands;
+}
+
+/** Pixel height of a card slide at one type step, including the title and padding. */
+export function occupy(pieces: SlidePiece[], fit: PieceFit, options: { title: string; continued: boolean }): number {
+  const type = PIECE_TYPE[fit];
+  let height = 40 + 36;
+  let bands = 0;
+  const add = (block: number) => {
+    if (bands) height += BAND_GAP;
+    height += block;
+    bands += 1;
+  };
+  if (options.continued) add(22);
+  if (options.title.trim()) add(lineStack(textLines(options.title, type.title, CONTENT), type.title, 1.12, 2));
+  for (const band of pieceBands(pieces)) add(bandHeight(band, type));
+  return height + 12;
+}
+
+/** Roomy when the larger type still fits. Otherwise the reading size. */
+export function pieceFit(slide: Pick<SourceSlide, "pieces" | "title" | "context">): PieceFit {
+  const options = { title: slide.title, continued: isContinued(slide as SourceSlide) };
+  return occupy(slide.pieces ?? [], "roomy", options) <= FIT_LIMIT ? "roomy" : "read";
+}
+
+export function pieceFrame(fit: PieceFit) {
+  const type = PIECE_TYPE[fit];
+  return {
+    type,
+    pt: (px: number) => Math.round(px * 0.75),
+    inch: (px: number) => px / 96,
+    proseHeight: (text: string) => proseHeight(text, type),
+    proseParts: (text: string) => proseParts(text, type),
+    listHeight: (items: ListPiece[]) => listHeight(items, type),
+    cardHeight: (item: CardPiece, across: number) => cardHeight(item, type, across),
+  };
+}
+
+function paginate(pieces: SlidePiece[], title: string): SlidePiece[][] {
+  const pages: SlidePiece[][] = [];
+  let page: SlidePiece[] = [];
+  const fits = (items: SlidePiece[], continued: boolean) => occupy(items, "read", { title, continued }) <= FIT_LIMIT;
+  for (const band of pieceBands(pieces)) {
+    const items = band.kind === "prose" ? [{ kind: "prose" as const, text: band.text }] : band.items;
+    if (page.length && !fits([...page, ...items], pages.length > 0)) {
+      pages.push(page);
+      page = [];
+    }
+    page.push(...items);
+  }
+  if (page.length) pages.push(page);
+  return pages.length ? pages : [[]];
+}
+
+/** A slide that cannot fit on one canvas continues on the next one. */
+function spreadPieces(slides: SourceSlide[]): SourceSlide[] {
+  const out: SourceSlide[] = [];
+  for (const slide of slides) {
+    const pieces = slide.pieces ?? [];
+    const structured = pieces.some((piece) => piece.kind === "card" || piece.kind === "list");
+    if (!structured || slide.chart || slide.images.length > 0) {
+      out.push(slide);
+      continue;
+    }
+    const pages = paginate(pieces, slide.title);
+    if (pages.length <= 1) {
+      out.push(slide);
+      continue;
+    }
+    pages.forEach((page, index) => {
+      out.push({
+        ...slide,
+        context: index === 0 ? slide.context : CONTINUED,
+        pieces: page,
+        numbers: index === 0 ? slide.numbers : [],
+        images: index === 0 ? slide.images : [],
+      });
+    });
+  }
+  return reindex(out);
+}
+
 export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promise<{ deck: SourceDeck; text: string; note: string }> {
   let zip: JSZip;
   try {
@@ -639,12 +1085,15 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     let body = blocks.filter((block) => block.role === "body");
     if (!title) {
       const first = body[0];
-      const head = first?.text.split("\n").map((line) => line.trim()).filter(Boolean)[0] ?? "";
+      const lines = first?.text.split("\n").map((line) => line.trim()).filter(Boolean) ?? [];
+      const head = lines[0] ?? "";
       if (head && head.length <= 80) {
         title = head;
-        const restLines = (first?.text.split("\n").slice(1) ?? []).map((line) => line.trim()).filter(Boolean);
-        const rest = [...restLines, ...body.slice(1).map((block) => block.text).filter(Boolean)];
-        body = rest.length ? [{ role: "body", text: rest.join("\n") }] : [];
+        const restOfFirst = lines.slice(1).join("\n");
+        body = [
+          ...(restOfFirst ? [{ role: "body" as const, text: restOfFirst }] : []),
+          ...body.slice(1),
+        ];
       }
     }
     if (!title && named) title = named;
@@ -655,7 +1104,9 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
       const seriesName = chart.series.map((series) => series.name).find((item) => item && item !== "Value");
       if (seriesName) title = seriesName;
     }
-    const context = body.map((block) => block.text).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    const groups = body.map((block) => block.text.trim()).filter(Boolean);
+    const pieces = piecesOf(groups);
+    const context = groups.filter((group) => !/^\d{1,2}$/.test(group)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
     const images = await imagesOn(zip, rels ?? "", xml);
     markedPicture.push(/<p:pic\b/.test(xml));
     slides.push({
@@ -668,6 +1119,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
       picture: false,
       images,
       table,
+      pieces,
     });
   }
   const footer = runningFooter(slides);
@@ -682,7 +1134,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     const textLen = `${slide.title} ${slide.context}`.trim().length;
     slide.picture = (slide.images.length > 0 || markedPicture[index] === true) && textLen < 12 && !slide.chart && slide.numbers.length === 0;
   });
-  const shaped = spreadPictures(titlePass(slides));
+  const shaped = spreadPieces(spreadPictures(titlePass(slides)));
   const title = shaped.find((slide) => slide.title.trim())?.title.trim() || fileTitle(fileName);
   const deck: SourceDeck = { title: title.slice(0, 80), intent: "", slides: shaped };
   deck.intent = shaped.length ? intentOf(shaped, deck.title) : "";
@@ -715,13 +1167,28 @@ function reindex(slides: SourceSlide[]): SourceSlide[] {
   return slides.map((slide, index) => ({ ...slide, index: index + 1 }));
 }
 
+/** A name on its own, with nothing under it. A label such as "Data Science" is a card, not a presenter. */
+function openingName(pieces: SlidePiece[]): string {
+  for (const piece of pieces) {
+    if (piece.kind === "prose" && personName(piece.text)) return piece.text.trim();
+    if (piece.kind === "card" && !piece.detail && !piece.display && !piece.title.includes("\n") && personName(piece.title)) return piece.title.trim();
+  }
+  return "";
+}
+
 /** Slide 1 is the title and the presenter. Any other opening words move to the next slide. */
 function titlePass(slides: SourceSlide[]): SourceSlide[] {
   const first = slides[0];
   if (!first) return slides;
   const lines = first.context.split(/\n/).map((line) => line.trim()).filter(Boolean);
-  const presenter = lines.map(personName).find(Boolean) ?? "";
+  const presenter = openingName(first.pieces ?? []);
   const restLines = lines.filter((line) => line !== presenter && !dateOnly(line));
+  const followPieces = (first.pieces ?? []).filter((piece) => {
+    if (!presenter) return true;
+    if (piece.kind === "prose") return piece.text.trim() !== presenter;
+    if (piece.kind === "card") return !(piece.title.trim() === presenter && !piece.detail && !piece.display);
+    return true;
+  });
   const title = first.title.trim() || "Untitled";
   const opening: SourceSlide = {
     index: 1,
@@ -733,9 +1200,10 @@ function titlePass(slides: SourceSlide[]): SourceSlide[] {
     picture: false,
     images: [],
     table: null,
+    pieces: [],
   };
   const hasRest = restLines.length > 0 || first.images.length > 0 || Boolean(first.chart) || Boolean(first.table) || first.numbers.length > 0;
-  const follow = hasRest ? [{ ...first, title, context: restLines.join("\n") }] : [];
+  const follow = hasRest ? [{ ...first, title, context: restLines.join("\n"), pieces: followPieces }] : [];
   return reindex([opening, ...follow, ...slides.slice(1)]);
 }
 

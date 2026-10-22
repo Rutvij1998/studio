@@ -99,7 +99,15 @@ export type SourceNumber = {
   label: string;
   value: number;
   display: string;
+  /** The sentence under a callout, as written on the slide. */
+  note?: string;
 };
+
+/** One block from the source slide, in the order it was written. */
+export type SlidePiece =
+  | { kind: "prose"; text: string }
+  | { kind: "card"; title: string; detail: string; display: string; label: string }
+  | { kind: "list"; title: string; points: string[] };
 
 export type SourceSeries = {
   name: string;
@@ -143,6 +151,8 @@ export type SourceSlide = {
   images: SourceImage[];
   /** The number table on the slide, kept beside any chart drawn from it. */
   table: SourceTable | null;
+  /** Cards and lists in source order. Empty when the slide is ordinary prose. */
+  pieces?: SlidePiece[];
 };
 
 /** A deck read slide by slide. */

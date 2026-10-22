@@ -1,6 +1,6 @@
 import PptxGenJS from "pptxgenjs";
 import { readDeckText } from "./parse.ts";
-import { bulletLines, chartSentence, isSource, leadCopy, presentKind, readSourceDeck, slideRead, sourceSummary } from "./sourceDeck.ts";
+import { bulletLines, chartSentence, copyBlocks, isSource, leadCopy, piecesOf, presentKind, readSourceDeck, slideRead, sourceSummary } from "./sourceDeck.ts";
 
 const failures: string[] = [];
 const expect = (label: string, actual: unknown, wanted: unknown) => {
@@ -264,6 +264,84 @@ async function listed() {
 }
 
 await listed();
+
+const broken = copyBlocks("Blanket verification creates collateral damage\n• More friction for legitimate customers• Longer approval times• Higher support contacts");
+const list = broken.find((block) => block.kind === "list");
+expect("inline points", list && list.kind === "list" ? list.points.join("|") : "", "More friction for legitimate customers|Longer approval times|Higher support contacts");
+
+async function breaks() {
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  pres.layout = "DECK";
+  const slide = pres.addSlide();
+  slide.addText("What We Should Not Do", { x: 0.5, y: 0.3, w: 10, h: 0.4, fontSize: 28, fontFace: "Calibri" });
+  slide.addText([
+    { text: "Blanket verification creates collateral damage", options: { breakLine: true } },
+    { text: "• More friction for legitimate customers", options: { breakLine: true } },
+    { text: "• Longer approval times", options: { breakLine: true } },
+    { text: "• Higher support contacts", options: { breakLine: true } },
+  ], { x: 0.5, y: 1, w: 10, h: 2, fontSize: 16, fontFace: "Calibri" });
+  slide.addText("2", { x: 0.5, y: 4, w: 2, h: 0.5, fontSize: 32, fontFace: "Calibri" });
+  const read = await readSourceDeck(await pres.write({ outputType: "arraybuffer" }) as ArrayBuffer, "breaks.pptx");
+  const follow = read.deck.slides[1];
+  includes("line break kept", follow?.context ?? "", "\n• Longer approval times");
+  const points = copyBlocks(follow?.context ?? "").find((block) => block.kind === "list");
+  expect("broken lines", points && points.kind === "list" ? points.points.join("|") : "", "More friction for legitimate customers|Longer approval times|Higher support contacts");
+}
+
+await breaks();
+
+async function cards() {
+  const problem = piecesOf([
+    "This is not just a fraud problem — it is a claims-quality and ownership problem.",
+    "18% ↑ claim cost\nVolume is flat, so the business is paying more per claim.",
+    "5+ day delays\nGenuine customers are waiting too long for verification.",
+    "$2M savings target\nReduce cost without harming approvals or partner trust.",
+    "Finance\nFraud + duplicates",
+    "Support\nCustomer delays",
+    "The gap is ownership\nWe need one operating system for claim risk, cost, and customer speed.",
+    "1",
+  ]);
+  const stat = problem.find((piece) => piece.kind === "card" && piece.display === "18%");
+  const five = problem.find((piece) => piece.kind === "card" && piece.display === "5+");
+  const savings = problem.find((piece) => piece.kind === "card" && piece.display === "$2M");
+  const finance = problem.find((piece) => piece.kind === "card" && piece.title === "Finance");
+  expect("page number is not a card", problem.some((piece) => piece.kind === "card" && (piece.display === "1" || piece.title === "1")), false);
+  expect("cost display", stat && stat.kind === "card" ? stat.label : "", "↑ claim cost");
+  expect("delay display", five && five.kind === "card" ? five.label : "", "day delays");
+  expect("savings display", savings && savings.kind === "card" ? savings.label : "", "savings target");
+  expect("finance detail", finance && finance.kind === "card" ? finance.detail : "", "Fraud + duplicates");
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  pres.layout = "DECK";
+  const slide = pres.addSlide();
+  slide.addText("The Real Problem", { x: 0.5, y: 0.2, w: 10, h: 0.4, fontSize: 28, fontFace: "Calibri" });
+  slide.addText("This is not just a fraud problem.", { x: 0.5, y: 0.7, w: 10, h: 0.3, fontSize: 14, fontFace: "Calibri" });
+  slide.addText([
+    { text: "18% ↑ claim cost", options: { breakLine: true } },
+    { text: "Volume is flat, so the business is paying more per claim." },
+  ], { x: 0.5, y: 1.1, w: 4, h: 0.8, fontSize: 14, fontFace: "Calibri" });
+  slide.addText([
+    { text: "Finance", options: { breakLine: true } },
+    { text: "Fraud + duplicates" },
+  ], { x: 5, y: 1.1, w: 4, h: 0.6, fontSize: 14, fontFace: "Calibri" });
+  slide.addText([
+    { text: "Data Science", options: { breakLine: true } },
+    { text: "Model trust + explainability" },
+  ], { x: 5, y: 2, w: 4, h: 0.6, fontSize: 14, fontFace: "Calibri" });
+  slide.addText("1", { x: 12, y: 6.8, w: 0.4, h: 0.3, fontSize: 12, fontFace: "Calibri" });
+  const read = await readSourceDeck(await pres.write({ outputType: "arraybuffer" }) as ArrayBuffer, "problem.pptx");
+  const follow = read.deck.slides[1];
+  const pieces = follow?.pieces ?? [];
+  expect("cover is the title only", read.deck.slides[0]?.context ?? "x", "");
+  expect("shapes stay apart", pieces.length, 4);
+  expect("read keeps the stat", pieces.some((piece) => piece.kind === "card" && piece.display === "18%" && piece.label === "↑ claim cost"), true);
+  expect("read keeps the tile", pieces.some((piece) => piece.kind === "card" && piece.title === "Finance" && piece.detail === "Fraud + duplicates"), true);
+  expect("read drops the page number", pieces.some((piece) => piece.kind === "card" && piece.display === "1"), false);
+  expect("department stays a card", pieces.some((piece) => piece.kind === "card" && piece.title === "Data Science" && piece.detail === "Model trust + explainability"), true);
+}
+
+await cards();
 
 if (failures.length) {
   console.error(failures.join("\n"));

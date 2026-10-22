@@ -18,7 +18,7 @@ import { chartFit, comboPair } from "./fit";
 import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, isGrid } from "./grid";
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesChartsSource, seriesProgressList, trackNote, trackTotals } from "./reading";
-import { axisMax, bulletLines, chartKicker, chartSentence, formLabel, formatPoint, isContinued, isSource, leadCopy, presentKind, railLabel, rowDisplay, slideRole } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, chartSentence, copyBlocks, figureBody, formLabel, formatPoint, isContinued, isSource, leadCopy, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, spareHeaders } from "./sourceDeck";
 import type { SheetGrid, SourceChart, SourceSlide, SourceTable } from "./book";
 
 export type SlideId =
@@ -976,14 +976,155 @@ function OriginLegend({ chart }: { chart: SourceChart }) {
   );
 }
 
+function cellText(table: SourceTable | null, category: string, series: { name: string; values: number[] }, value: number) {
+  return rowDisplay(table, category, [series], formatPoint(value));
+}
+
+function leadAt(categories: string[], values: number[]): number {
+  const total = categories.findIndex((category) => /^total\b/i.test(category.trim()));
+  if (total >= 0) return total;
+  return values.reduce((best, value, index) => (value > (values[best] ?? 0) ? index : best), 0);
+}
+
+function ScoreChart({ chart, table }: { chart: SourceChart; table: SourceTable | null }) {
+  const series = chart.series[0];
+  if (!series) return null;
+  const cats = chart.categories.slice(0, 5);
+  const values = cats.map((_, index) => series.values[index] ?? 0);
+  const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
+  const lead = leadAt(cats, values);
+  const rest = cats.map((_, index) => index).filter((index) => index !== lead);
+  return (
+    <div className="score-board">
+      <div className="score-hero">
+        <b>{cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)}</b>
+        <span>{cats[lead]}</span>
+        <i><em style={{ width: `${((Math.max(0, values[lead] ?? 0)) / max) * 100}%` }} /></i>
+      </div>
+      {rest.length > 0 ? (
+        <div className={`score-rest rest-${rest.length}`}>
+          {rest.map((index) => (
+            <div className="score-tile" key={`${cats[index]}-${index}`}>
+              <b>{cellText(table, cats[index] ?? "", series, values[index] ?? 0)}</b>
+              <span>{cats[index]}</span>
+              <i><em style={{ width: `${((Math.max(0, values[index] ?? 0)) / max) * 100}%` }} /></i>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RankChart({ chart, table }: { chart: SourceChart; table: SourceTable | null }) {
+  const series = chart.series[0];
+  if (!series) return null;
+  const cats = chart.categories.slice(0, 14);
+  const values = cats.map((_, index) => series.values[index] ?? 0);
+  const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
+  return (
+    <ol className="rank-chart" role="img" aria-label={chartSentence(chart)}>
+      {cats.map((cat, index) => (
+        <li key={`${cat}-${index}`}>
+          <span>{cat}</span>
+          <i><em style={{ width: `${(Math.max(0, values[index] ?? 0) / max) * 100}%` }} /></i>
+          <b>{cellText(table, cat, series, values[index] ?? 0)}</b>
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function MatrixChart({ chart, table }: { chart: SourceChart; table: SourceTable | null }) {
+  const cats = chart.categories.slice(0, 12);
+  const series = chart.series.slice(0, 4).map((item) => ({ ...item, values: cats.map((_, index) => item.values[index] ?? 0) }));
+  const spare = spareHeaders(table, series);
+  const maxes = series.map((item) => Math.max(1, ...item.values.map((value) => Math.max(0, value))));
+  const columns = `minmax(148px, 1.15fr) repeat(${series.length + spare.length}, minmax(0, 1fr))`;
+  return (
+    <div className="matrix" role="img" aria-label={chartSentence(chart)}>
+      <p>Each column has its own scale. The figure is the cell as written.</p>
+      <div className="matrix-row is-head" style={{ gridTemplateColumns: columns }}>
+        <span />
+        {series.map((item) => <span key={item.name}>{item.name}</span>)}
+        {spare.map((header) => <span key={header}>{header}</span>)}
+      </div>
+      {cats.map((cat, index) => {
+        const row = table?.rows.find((item) => (item[0] ?? "").trim() === cat);
+        return (
+          <div className="matrix-row" key={`${cat}-${index}`} style={{ gridTemplateColumns: columns }}>
+            <span className="matrix-name">{cat}</span>
+            {series.map((item, seriesIndex) => (
+              <span className="matrix-cell" key={item.name}>
+                <i><em className={`s${seriesIndex}`} style={{ width: `${(Math.max(0, item.values[index] ?? 0) / (maxes[seriesIndex] ?? 1)) * 100}%` }} /></i>
+                <b>{cellText(table, cat, item, item.values[index] ?? 0)}</b>
+              </span>
+            ))}
+            {spare.map((header) => {
+              const column = table?.headers.findIndex((item) => item.trim() === header) ?? -1;
+              return <b className="matrix-spare" key={header}>{column >= 0 ? row?.[column] ?? "" : ""}</b>;
+            })}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TrendChart({ chart }: { chart: SourceChart }) {
+  const cats = chart.categories.slice(0, 16);
+  const series = chart.series.slice(0, 4).map((item) => ({ ...item, values: cats.map((_, index) => item.values[index] ?? 0) }));
+  const span = axisSpan(series.flatMap((item) => item.values));
+  const width = 760;
+  const height = 340;
+  const padL = 58;
+  const padR = 16;
+  const padT = 24;
+  const padB = 40;
+  const innerW = width - padL - padR;
+  const innerH = height - padT - padB;
+  const xOf = (index: number) => (cats.length <= 1 ? padL + innerW / 2 : padL + (innerW * index) / (cats.length - 1));
+  const yOf = (value: number) => padT + innerH - ((Math.max(span.min, value) - span.min) / (span.max - span.min || 1)) * innerH;
+  const ticks = [span.max, span.min + (span.max - span.min) / 2, span.min];
+  return (
+    <figure className={`origin-trend${cats.length > 8 ? " is-dense" : ""}`}>
+      <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={chartSentence(chart)}>
+        {ticks.map((tick) => (
+          <g key={tick}>
+            <line x1={padL} x2={width - padR} y1={yOf(tick)} y2={yOf(tick)} />
+            <text className="axis" x={padL - 8} y={yOf(tick) + 4} textAnchor="end">{formatPoint(tick)}</text>
+          </g>
+        ))}
+        {series.map((item, index) => {
+          const line = item.values.map((value, point) => `${point === 0 ? "M" : "L"}${xOf(point).toFixed(1)} ${yOf(value).toFixed(1)}`).join(" ");
+          return (
+            <g key={`${item.name}-${index}`} className={`s${index}`}>
+              <path className="glow" d={line} />
+              <path className="stroke" d={line} />
+              {item.values.map((value, point) => <circle key={point} cx={xOf(point)} cy={yOf(value)} r="5" />)}
+            </g>
+          );
+        })}
+        {series.length === 1 && cats.length <= 8
+          ? series[0]!.values.map((value, point) => (
+            <text key={`value-${point}`} className="point" x={xOf(point)} y={yOf(value) - 18} textAnchor="middle">{formatPoint(value)}</text>
+          ))
+          : null}
+        {cats.map((cat, index) => (
+          <text key={`${cat}-${index}`} className="cat" x={xOf(index)} y={height - 12} textAnchor="middle">{cat}</text>
+        ))}
+      </svg>
+    </figure>
+  );
+}
+
 function OriginColumns({ chart, stacked }: { chart: SourceChart; stacked: boolean }) {
   const cats = chart.categories.slice(0, 12);
-  const series = chart.series.slice(0, 4).map((item) => ({ ...item, values: item.values.slice(0, 12) }));
+  const series = chart.series.slice(0, 4).map((item) => ({ ...item, values: item.values.slice(0, cats.length) }));
   const peaks = cats.map((_, index) => stacked
     ? series.reduce((total, item) => total + Math.max(0, item.values[index] ?? 0), 0)
     : Math.max(0, ...series.map((item) => item.values[index] ?? 0)));
   const max = axisMax(Math.max(0, ...peaks));
-  const single = series.length === 1;
   return (
     <div className="origin-chart">
       <div className="origin-axis" aria-hidden>
@@ -1011,7 +1152,7 @@ function OriginColumns({ chart, stacked }: { chart: SourceChart; stacked: boolea
                   const printed = formatPoint(value);
                   return (
                     <i key={`${item.name}-${seriesIndex}`} className={`s${seriesIndex}`} style={{ ["--h" as string]: Math.max(0, value) / max }}>
-                      {single && printed.length <= 6 ? <em>{printed}</em> : null}
+                      {printed.length <= 8 ? <em>{printed}</em> : null}
                     </i>
                   );
                 })}
@@ -1022,74 +1163,6 @@ function OriginColumns({ chart, stacked }: { chart: SourceChart; stacked: boolea
         ))}
       </div>
     </div>
-  );
-}
-
-function OriginBars({ chart, table }: { chart: SourceChart; table?: SourceTable | null }) {
-  const cats = chart.categories.slice(0, 14);
-  const series = chart.series.slice(0, 3).map((item) => ({ ...item, values: item.values.slice(0, 12) }));
-  const max = axisMax(Math.max(0, ...series.flatMap((item) => item.values.map((value) => Math.max(0, value)))));
-  return (
-    <ul className="origin-rows" role="img" aria-label={chartSentence(chart)}>
-      {cats.map((cat, index) => (
-        <li key={`${cat}-${index}`}>
-          <span>{cat}</span>
-          <div>
-            {series.map((item, seriesIndex) => (
-              <i key={`${item.name}-${seriesIndex}`} className={`s${seriesIndex}`} style={{ width: `${(Math.max(0, item.values[index] ?? 0) / max) * 100}%` }} />
-            ))}
-          </div>
-          <b>{rowDisplay(table ?? null, cat, series, series.map((item) => formatPoint(item.values[index] ?? 0)).join(" · "))}</b>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function OriginLine({ chart }: { chart: SourceChart }) {
-  const cats = chart.categories.slice(0, 16);
-  const series = chart.series.slice(0, 4).map((item) => ({ ...item, values: item.values.slice(0, 16) }));
-  const max = axisMax(Math.max(0, ...series.flatMap((item) => item.values.map((value) => Math.max(0, value)))));
-  const width = 640;
-  const height = 220;
-  const pad = 36;
-  const step = cats.length > 1 ? (width - pad * 2) / (cats.length - 1) : 0;
-  const xOf = (point: number) => (cats.length === 1 ? width / 2 : pad + point * step);
-  const yOf = (value: number) => height - (Math.max(0, value) / max) * (height - 28) - 8;
-  return (
-    <figure className="origin-line">
-      <div className="origin-axis" aria-hidden>
-        <span>{formatPoint(max)}</span>
-        <span>{formatPoint(max / 2)}</span>
-        <span>0</span>
-      </div>
-      <div className="origin-line-body">
-        <svg viewBox={`0 0 ${width} ${height}`} role="img" aria-label={chartSentence(chart)}>
-          <line x1={pad} y1={yOf(max / 2)} x2={width - pad} y2={yOf(max / 2)} />
-          {series.map((item, index) => {
-            const path = item.values.map((value, point) => {
-              return `${point === 0 ? "M" : "L"}${xOf(point).toFixed(1)} ${yOf(value).toFixed(1)}`;
-            }).join(" ");
-            return <path key={`${item.name}-${index}`} className={`s${index}`} d={path} />;
-          })}
-          {series.length === 1 && cats.length <= 8 && series[0]!.values.map((value, point) => {
-            const x = xOf(point);
-            const y = yOf(value);
-            return (
-              <g key={`point-${point}`}>
-                <circle className="s0" cx={x} cy={y} r="4.5" />
-                <text x={x} y={y - 12} textAnchor="middle">{formatPoint(value)}</text>
-              </g>
-            );
-          })}
-        </svg>
-        <div className="origin-labels">
-          {cats.map((cat, index) => (
-            <span key={`${cat}-${index}`}>{cat}</span>
-          ))}
-        </div>
-      </div>
-    </figure>
   );
 }
 
@@ -1184,58 +1257,81 @@ function OriginFunnel({ chart, table }: { chart: SourceChart; table: SourceTable
 }
 
 function ChartPlot({ chart, table }: { chart: SourceChart; table: SourceTable | null }) {
-  const kind = chart.kind;
-  if (kind === "funnel") return <OriginFunnel chart={chart} table={table} />;
-  if (kind === "donut") return <OriginDonut chart={chart} />;
-  if (kind === "bars") return <OriginBars chart={chart} table={table} />;
-  if (kind === "line") return <OriginLine chart={chart} />;
-  return <OriginColumns chart={chart} stacked={kind === "stacked"} />;
+  const mode = plotMode(chart);
+  if (mode === "funnel") return <OriginFunnel chart={chart} table={table} />;
+  if (mode === "donut") return <OriginDonut chart={chart} />;
+  if (mode === "score") return <ScoreChart chart={chart} table={table} />;
+  if (mode === "rank") return <RankChart chart={chart} table={table} />;
+  if (mode === "matrix") return <MatrixChart chart={chart} table={table} />;
+  if (mode === "trend") return <TrendChart chart={chart} />;
+  return <OriginColumns chart={chart} stacked={mode === "stacked"} />;
 }
 
 function OriginChart({ slide }: { slide: SourceSlide }) {
   const chart = slide.chart;
   if (!chart) return null;
-  const kind = chart.kind;
-  const limit = kind === "bars" ? 14 : kind === "line" || kind === "funnel" ? 16 : 12;
+  const mode = plotMode(chart);
+  const inline = mode === "score" || mode === "rank" || mode === "matrix";
+  const limit = mode === "rank" ? 14 : mode === "trend" || mode === "funnel" ? 16 : mode === "matrix" ? 12 : mode === "score" ? 5 : 12;
   const hidden = chart.categories.length > limit;
+  const eyebrow = chartEyebrow(chart);
   const note = [
-    chart.series.length > 1 && kind === "donut" ? "The first series is drawn." : "",
+    chart.series.length > 1 && mode === "donut" ? "The first series is drawn." : "",
     hidden ? `First ${limit} of ${chart.categories.length} points.` : "",
-    slide.table && slide.table.rows.length > chart.categories.length ? `Every row stays in the table.` : "",
+    !inline && slide.table && slide.table.rows.length > chart.categories.length ? "Every row stays in the table." : "",
     slide.extraCharts > 0 ? "Another chart is on this slide and is not drawn." : "",
-    chart.drawn,
+    chartFoot(chart),
   ].filter(Boolean).join(" ");
+  const showLegend = mode === "trend" || mode === "columns" || mode === "stacked";
   return (
-    <article className={`slide story${slide.table ? " has-table" : ""}`}>
+    <article className={`slide story is-${mode}${!inline && slide.table ? " has-table" : ""}`}>
       <header className="origin-top">
         <div>
-          <p className="kicker">{chartKicker(chart)}</p>
+          {eyebrow ? <p className="kicker">{eyebrow}</p> : null}
           <h2>{slide.title || "Chart"}</h2>
         </div>
-        <OriginLegend chart={chart} />
+        {showLegend ? <OriginLegend chart={chart} /> : null}
       </header>
-      {slide.context.trim() && <p className="story-line">{slide.context.trim()}</p>}
+      <CopyBlocks text={slide.context} tone="story" />
       <div className="story-stage">
-        <div className={`story-plot${slide.images.length ? " has-kept" : ""}${chart.categories.length > 6 ? " is-tight" : ""}`}>
+        <div className={`story-plot${slide.images.length ? " has-kept" : ""}`}>
           <ChartPlot chart={chart} table={slide.table} />
           <KeptImages images={slide.images} label={slide.title || "Chart picture"} />
         </div>
-        {slide.table && <TableCard table={slide.table} />}
+        {!inline && slide.table ? <TableCard table={slide.table} /> : null}
       </div>
       {note && <p className="bar-note">{note}</p>}
     </article>
   );
 }
 
+function CopyBlocks({ text, tone }: { text: string; tone: "story" | "figure" }) {
+  const blocks = copyBlocks(text);
+  if (!blocks.length) return null;
+  return (
+    <div className={`copy-blocks is-${tone}`}>
+      {blocks.map((block, index) => block.kind === "list" ? (
+        <ul className={tone === "story" ? "story-points" : "bullet-list is-tight"} key={index}>
+          {block.points.map((line, point) => (
+            <li key={`${line}-${point}`}><i aria-hidden /><span>{line}</span></li>
+          ))}
+        </ul>
+      ) : (
+        <p className={tone === "story" ? "story-line" : "origin-context"} key={index}>{block.text}</p>
+      ))}
+    </div>
+  );
+}
+
 function OriginNumbers({ slide }: { slide: SourceSlide }) {
   const numbers = slide.numbers.slice(0, 6);
-  const context = slide.context.trim();
-  const shown = context.length > 280 ? `${context.slice(0, 280).trimEnd()}…` : context;
+  const body = figureBody(slide).trim();
+  const busy = copyBlocks(body).some((block) => block.kind === "list") || body.length > 180;
   if (numbers.length === 1) {
     const number = numbers[0]!;
     const wide = number.display.length > 8;
     return (
-      <article className="slide paper origin">
+      <article className={`slide paper origin${busy ? " has-copy" : ""}`}>
         <header className="book-top">
           <p className="kicker">Figure</p>
           <h2>{slide.title || number.label || "Figure"}</h2>
@@ -1244,14 +1340,14 @@ function OriginNumbers({ slide }: { slide: SourceSlide }) {
           <p className="rate" data-wide={wide ? "" : undefined}>{number.display}</p>
           {number.label && <p className="rate-caption">{number.label}</p>}
         </div>
-        {shown && <p className="origin-context">{shown}</p>}
+        {body ? <CopyBlocks text={body} tone="figure" /> : null}
         <KeptImages images={slide.images} label={slide.title || "Picture"} />
       </article>
     );
   }
   const columns = numbers.length === 2 || numbers.length === 4 ? numbers.length : numbers.length === 3 ? 3 : 3;
   return (
-    <article className="slide paper origin">
+    <article className={`slide paper origin${busy ? " has-copy" : ""}`}>
       <header className="book-top">
         <p className="kicker">Figures</p>
         <h2>{slide.title || "Figures"}</h2>
@@ -1264,7 +1360,7 @@ function OriginNumbers({ slide }: { slide: SourceSlide }) {
           </li>
         ))}
       </ul>
-      {shown && <p className="bar-note">{shown}</p>}
+      {body ? <CopyBlocks text={body} tone="figure" /> : null}
       <KeptImages images={slide.images} label={slide.title || "Picture"} />
     </article>
   );
@@ -1415,7 +1511,7 @@ function GridSlide({ book, index }: { book: Book; index: number }) {
         </div>
       ) : kind === "bars" && drawn ? (
         <div className="grid-fit">
-          <OriginBars chart={drawn} />
+          <RankChart chart={drawn} table={null} />
         </div>
       ) : kind === "donut" && drawn ? (
         <div className="grid-fit">
@@ -1626,6 +1722,47 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
   );
 }
 
+function OriginPieces({ slide }: { slide: SourceSlide }) {
+  const continued = isContinued(slide);
+  const bands = pieceBands(slide.pieces ?? []);
+  return (
+    <article className="slide piece-slide" data-fit={pieceFit(slide)}>
+      {continued ? <p className="kicker">Continued</p> : null}
+      {slide.title.trim() ? <h2>{slide.title.trim()}</h2> : null}
+      {bands.map((band, index) => {
+        if (band.kind === "prose") return <CopyBlocks key={index} text={band.text} tone="figure" />;
+        if (band.kind === "lists") {
+          return (
+            <div className={`piece-columns cols-${band.items.length}`} key={index}>
+              {band.items.map((item, itemIndex) => (
+                <section key={`${item.title}-${itemIndex}`}>
+                  {item.title ? <h3>{item.title}</h3> : null}
+                  <ul className="bullet-list is-tight">
+                    {item.points.map((point, pointIndex) => (
+                      <li key={`${point}-${pointIndex}`}><i aria-hidden /><span>{point}</span></li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          );
+        }
+        return (
+          <div className={`piece-grid is-${band.tone}`} key={index}>
+            {band.items.map((item, itemIndex) => (
+              <article key={`${item.title}-${itemIndex}`}>
+                {item.display ? <b>{item.display}</b> : null}
+                <strong>{item.display ? item.label || item.title : item.title}</strong>
+                {item.detail ? <span>{item.detail}</span> : null}
+              </article>
+            ))}
+          </div>
+        );
+      })}
+    </article>
+  );
+}
+
 function Origin({ book, index }: { book: Book; index: number }) {
   const slide = originSlide(book, index);
   if (!slide) {
@@ -1637,7 +1774,9 @@ function Origin({ book, index }: { book: Book; index: number }) {
     );
   }
   const role = slideRole(slide);
+  const structured = (slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list");
   if (role === "cover") return <OriginCover book={book} slide={slide} />;
+  if (role !== "chart" && structured && slide.images.length === 0) return <OriginPieces slide={slide} />;
   if (role === "chart") return <OriginChart slide={slide} />;
   if (role === "figures") return <OriginNumbers slide={slide} />;
   if (role === "pictures" && presentKind(slide) === "picture" && slide.images.length === 0) return <OriginProse slide={slide} />;
