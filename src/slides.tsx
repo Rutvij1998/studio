@@ -18,8 +18,9 @@ import { chartFit, comboPair } from "./fit";
 import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, isGrid } from "./grid";
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesChartsSource, seriesProgressList, trackNote, trackTotals } from "./reading";
-import { axisMax, axisSpan, bulletLines, chartEyebrow, chartFoot, chartSentence, copyBlocks, figureBody, formLabel, formatPoint, imageSize, isContinued, isSource, leadCopy, pictureLayout, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide } from "./sourceDeck";
-import type { SheetGrid, SourceChart, SourceSlide, SourceTable } from "./book";
+import { coverWave } from "./dotWave";
+import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, chartSentence, compareSplit, copyBlocks, figureBody, formLabel, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
+import type { SheetGrid, SlidePiece, SourceChart, SourceSlide, SourceTable } from "./book";
 
 export type SlideId =
   | "cover"
@@ -224,6 +225,32 @@ function coverKicker(book: Book): string {
   return "Client scorecard";
 }
 
+const COVER_DOTS = coverWave();
+
+function CoverWave() {
+  return (
+    <svg className="cover-wave" viewBox="0 0 1280 720" aria-hidden="true">
+      {COVER_DOTS.map((dot, index) => (
+        <circle key={index} cx={dot.x * 1280} cy={dot.y * 720} r={dot.r * 1280} fill={`#${dot.fill}`} opacity={dot.opacity} />
+      ))}
+    </svg>
+  );
+}
+
+function CoverTitle({ title }: { title: string }) {
+  if (!title.includes("\n")) return title;
+  const lines = title.split("\n");
+  const last = lines[lines.length - 1] ?? "";
+  const lead = lines.slice(0, -1).join("\n");
+  return (
+    <>
+      {lead}
+      {"\n"}
+      <span className="cover-grad">{last}</span>
+    </>
+  );
+}
+
 function Cover({ book, chapters }: { book: Book; chapters: string[] }) {
   const line = isOutline(book) && book.outline
     ? outlineLine(book.outline)
@@ -240,6 +267,7 @@ function Cover({ book, chapters }: { book: Book; chapters: string[] }) {
   const long = title.length > 16;
   return (
     <article className="slide cover">
+      <CoverWave />
       {book.logo ? (
         <div className="cover-mark">
           <img src={book.logo} alt={`${book.client} mark`} />
@@ -1218,8 +1246,9 @@ function KeptImages({ images, label, stage = false }: { images: SourceSlide["ima
 
 function TableCard({ table }: { table: SourceTable }) {
   const dense = table.rows.length > 6;
+  const textual = !tableHasNumbers(table);
   return (
-    <div className={`source-table${dense ? " is-dense" : ""}`}>
+    <div className={`source-table${dense ? " is-dense" : ""}${textual ? " is-text" : ""}`}>
       <p>As written</p>
       <table>
         <thead>
@@ -1670,13 +1699,14 @@ function OriginCover({ book, slide }: { book: Book; slide: SourceSlide }) {
   const presenter = slide.context.trim();
   return (
     <article className="slide cover">
+      <CoverWave />
       {book.logo ? (
         <div className="cover-mark">
           <img src={book.logo} alt="" />
         </div>
       ) : null}
       <div className="cover-lockup">
-        <h1 data-long={title.length > 42 ? "wide" : title.length > 22 ? "" : undefined}>{title}</h1>
+        <h1 data-lines={title.includes("\n") ? "" : undefined} data-long={title.includes("\n") ? undefined : title.length > 42 ? "wide" : title.length > 22 ? "" : undefined}><CoverTitle title={title} /></h1>
         {presenter ? <p className="presenter">{presenter}</p> : null}
       </div>
     </article>
@@ -1711,6 +1741,54 @@ function OriginProse({ slide }: { slide: SourceSlide }) {
   );
 }
 
+function PieceStack({ pieces }: { pieces: SlidePiece[] }) {
+  const bands = pieceBands(pieces);
+  return (
+    <>
+      {bands.map((band, index) => {
+        if (band.kind === "prose") {
+          const callout = index === bands.length - 1 && index > 0 && band.text.length <= 240;
+          return (
+            <div className={callout ? "piece-callout" : undefined} key={index}>
+              <CopyBlocks text={band.text} tone="figure" />
+            </div>
+          );
+        }
+        if (band.kind === "lists") {
+          const timed = band.items.filter((item) => isTimeTitle(item.title)).length >= 2;
+          return (
+            <div className={`piece-columns cols-${band.items.length}${timed ? " is-time" : ""}`} key={index}>
+              {band.items.map((item, itemIndex) => (
+                <section key={`${item.title}-${itemIndex}`}>
+                  {timed ? <p className="step-index">{String(itemIndex + 1).padStart(2, "0")}</p> : null}
+                  {item.title ? <h3>{item.title}</h3> : null}
+                  <ul className="bullet-list is-tight">
+                    {item.points.map((point, pointIndex) => (
+                      <li key={`${point}-${pointIndex}`}><i aria-hidden /><span>{point}</span></li>
+                    ))}
+                  </ul>
+                </section>
+              ))}
+            </div>
+          );
+        }
+        const across = gridAcross(band.tone, band.items.length);
+        return (
+          <div className={`piece-grid is-${band.tone}`} data-across={across} key={index}>
+            {band.items.map((item, itemIndex) => (
+              <article key={`${item.title}-${itemIndex}`} data-face={cardFace(item.title) || undefined}>
+                {item.display ? <b>{item.display}</b> : null}
+                <strong>{item.display ? item.label || item.title : item.title}</strong>
+                {item.detail ? <span>{item.detail}</span> : null}
+              </article>
+            ))}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 function OriginSheet({ slide }: { slide: SourceSlide }) {
   const bullets = bulletLines(slide);
   const lead = leadCopy(slide);
@@ -1719,7 +1797,8 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
   return (
     <article className={`slide sheet${pictures ? " has-pictures" : ""}${bullets.length ? " has-list" : ""}`}>
       {continued ? <p className="kicker">Continued</p> : null}
-      {slide.title.trim() ? <h2>{slide.title.trim()}</h2> : null}
+      {slide.eyebrow ? <p className="eyebrow">{slide.eyebrow}</p> : null}
+      {slide.title.trim() ? <h2 data-lines={slide.title.includes("\n") ? "" : undefined}>{slide.title.trim()}</h2> : null}
       {lead ? <p className="sheet-copy">{lead}</p> : null}
       {bullets.length > 0 ? (
         <ul className={`bullet-list${bullets.length > 8 ? " is-tight" : ""}`}>
@@ -1742,41 +1821,34 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
 
 function OriginPieces({ slide }: { slide: SourceSlide }) {
   const continued = isContinued(slide);
-  const bands = pieceBands(slide.pieces ?? []);
+  const pieces = slide.pieces ?? [];
+  const compare = compareSplit(pieces);
+  const aside = compare ? null : heroAside(pieces);
   return (
     <article className="slide piece-slide" data-fit={pieceFit(slide)}>
       {continued ? <p className="kicker">Continued</p> : null}
+      {slide.eyebrow ? <p className="eyebrow">{slide.eyebrow}</p> : null}
       {slide.title.trim() ? <h2>{slide.title.trim()}</h2> : null}
-      {bands.map((band, index) => {
-        if (band.kind === "prose") return <CopyBlocks key={index} text={band.text} tone="figure" />;
-        if (band.kind === "lists") {
-          return (
-            <div className={`piece-columns cols-${band.items.length}`} key={index}>
-              {band.items.map((item, itemIndex) => (
-                <section key={`${item.title}-${itemIndex}`}>
-                  {item.title ? <h3>{item.title}</h3> : null}
-                  <ul className="bullet-list is-tight">
-                    {item.points.map((point, pointIndex) => (
-                      <li key={`${point}-${pointIndex}`}><i aria-hidden /><span>{point}</span></li>
-                    ))}
-                  </ul>
-                </section>
-              ))}
-            </div>
-          );
-        }
-        return (
-          <div className={`piece-grid is-${band.tone}`} key={index}>
-            {band.items.map((item, itemIndex) => (
-              <article key={`${item.title}-${itemIndex}`}>
-                {item.display ? <b>{item.display}</b> : null}
-                <strong>{item.display ? item.label || item.title : item.title}</strong>
-                {item.detail ? <span>{item.detail}</span> : null}
-              </article>
-            ))}
+      {compare ? (
+        <>
+          {compare.before.length ? <PieceStack pieces={compare.before} /> : null}
+          <div className="piece-split">
+            <div><PieceStack pieces={compare.left} /></div>
+            <div><PieceStack pieces={compare.right} /></div>
           </div>
-        );
-      })}
+        </>
+      ) : aside ? (
+        <div className="piece-aside">
+          <article>
+            <b>{aside.stat.display}</b>
+            <strong>{aside.stat.label || aside.stat.title}</strong>
+            {aside.stat.detail ? <span>{aside.stat.detail}</span> : null}
+          </article>
+          <div><PieceStack pieces={aside.rest} /></div>
+        </div>
+      ) : (
+        <PieceStack pieces={pieces} />
+      )}
       {slide.images.length ? (
         <div className="picture-stage">
           <KeptImages images={slide.images} label={slide.title.trim() || "Picture"} stage />
@@ -1788,15 +1860,21 @@ function OriginPieces({ slide }: { slide: SourceSlide }) {
 
 function OriginTable({ slide }: { slide: SourceSlide }) {
   const table = tableFromSlide(slide);
+  const pieces = slide.pieces ?? [];
+  const lead = pieces.length
+    ? pieces.filter((piece) => piece.kind === "prose").map((piece) => piece.text).join("\n")
+    : slide.context;
+  const after = pieces.filter((piece) => piece.kind !== "prose");
   return (
     <article className="slide paper origin is-table">
       {isContinued(slide) ? <p className="kicker">Continued</p> : null}
       <header className="book-top">
-        <p className="kicker">Table</p>
+        {slide.eyebrow ? <p className="eyebrow">{slide.eyebrow}</p> : <p className="kicker">Table</p>}
         <h2>{slide.title.trim() || "Table"}</h2>
       </header>
-      {slide.context.trim() ? <CopyBlocks text={slide.context} tone="figure" /> : null}
+      {lead.trim() ? <CopyBlocks text={lead} tone="figure" /> : null}
       {table ? <TableCard table={table} /> : null}
+      {after.length ? <PieceStack pieces={after} /> : null}
       {slide.images.length ? (
         <div className="picture-stage">
           <KeptImages images={slide.images} label={slide.title || "Picture"} stage />
@@ -1819,6 +1897,7 @@ function Origin({ book, index }: { book: Book; index: number }) {
   const role = slideRole(slide);
   const structured = (slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list");
   if (role === "cover") return <OriginCover book={book} slide={slide} />;
+  if (slide.table && !slide.chart) return <OriginTable slide={slide} />;
   if (role !== "chart" && structured) return <OriginPieces slide={slide} />;
   if (role === "chart" && slideShow(slide) === "table") return <OriginTable slide={slide} />;
   if (role === "chart") return <OriginChart slide={slide} />;

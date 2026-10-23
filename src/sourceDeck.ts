@@ -13,7 +13,7 @@ const STOP = new Set([
 
 const VERB = new Set(["handled", "handle", "handling", "reached", "saw", "made", "took", "had", "has", "have", "posted", "recorded"]);
 
-const NUMBER_RE = /(?<![A-Za-z0-9])(?<currency>[$£€])?\s*(?<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*(?<unit>%|percent|pct|million|billion|thousand|mn|bn|m|k))?(?![A-Za-z])/gi;
+const NUMBER_RE = /(?<![A-Za-z0-9])(?<currency>[$£€])?\s*(?<num>\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)(?:\s*(?<unit>%|percent|pct|million|billion|thousand|mn|bn|m|k))?(?![A-Za-z0-9])/gi;
 
 const decode = (value: string) =>
   value
@@ -29,7 +29,7 @@ export function isSource(book: { sourceDeck: SourceDeck | null; active: number; 
 
 export function presentKind(slide: SourceSlide): PresentKind {
   if (slide.chart && slide.chart.series.some((series) => series.values.length > 0)) return "chart";
-  if (slide.numbers.length > 0) return "numbers";
+  if (slide.numbers.length > 0 && !slide.title.includes("\n")) return "numbers";
   if (slide.picture) return "picture";
   if (slide.index === 1 && slide.context.trim().length < 320) return "cover";
   return "prose";
@@ -171,6 +171,11 @@ export function slideRead(slide: SourceSlide): string {
       : "This slide is a picture. No title, figure, or chart was stored as text.";
     return slide.pace ? `${base} ${slide.pace}` : base;
   }
+  if (slide.table && !slide.chart) {
+    const headers = slide.table.headers.map((header) => header.trim()).filter(Boolean);
+    const line = `Table of ${headers.join(", ") || "the cells"}. The cells stay as written.`;
+    return slide.pace ? `${slide.pace} ${line}` : line;
+  }
   if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list") && slide.images.length === 0) {
     const kept = "The points on this slide, kept as written.";
     return slide.pace ? `${slide.pace} ${kept}` : kept;
@@ -197,6 +202,7 @@ export function railLabel(slide: SourceSlide): string {
 export function formLabel(slide: SourceSlide): string {
   const kind = presentKind(slide);
   if (kind === "cover") return "Opens";
+  if (slide.table && !slide.chart) return "Table";
   if (kind === "chart" && slide.chart) return slide.show === "table" ? "Table" : chartKindLabel(slide.chart.kind);
   if (kind === "picture") return "Picture";
   if ((slide.pieces ?? []).some((piece) => piece.kind === "card" || piece.kind === "list")) return "Context";
@@ -322,7 +328,8 @@ function textsOf(xml: string, breaks = true, markBullets = false): string {
       let text = "";
       for (const run of runs) {
         if (!run) continue;
-        if (text && /[\p{L}\p{N}]$/u.test(text) && /^[\p{L}\p{N}]/u.test(run)) text += " ";
+        const glue = text && /[\p{L}\p{N}]$/u.test(text) && /^[\p{L}\p{N}]/u.test(run) && !(/\d$/.test(text) && /^\d/.test(run));
+        if (glue) text += " ";
         text += run;
       }
       text = text.replace(/[ \t]+/g, " ").trim();
@@ -460,6 +467,10 @@ function figuresIn(text: string, title: string): SourceNumber[] {
     if (!unit && !currency && /[/-]/.test(text[start - 1] ?? "") && /\d/.test(text[start - 2] ?? "")) continue;
     if (!unit && !currency && text[end] === "-" && /[A-Za-z]/.test(text[end + 1] ?? "")) continue;
     if (!unit && !currency && Number.isInteger(value) && value < 100 && /step\s*$/i.test(text.slice(Math.max(0, start - 8), start))) continue;
+    const tail = text.slice(end, end + 20);
+    if (!unit && !currency && /^\s*(?:\+|h\b|hrs?\b|hours?\b|mins?\b|minutes?\b|days?\b)/i.test(tail)) continue;
+    if (!unit && !currency && /^\s*(?:to|–|-)\s*\d/.test(tail) && /\b(?:days?|hours?)\b/i.test(text.slice(start, Math.min(text.length, end + 28)))) continue;
+    if (!unit && !currency && Number.isInteger(value) && value <= 366 && /\b(?:day|days)\b/i.test(text.slice(Math.max(0, start - 14), Math.min(text.length, end + 10)))) continue;
     const before = trimStops(wordsOf(sameClause(text.slice(0, start), true)).slice(-4));
     const after = trimStops(wordsOf(sameClause(text.slice(end), false)).slice(0, 4));
     let label = cleanLabel(before.join(" "));
@@ -610,13 +621,23 @@ function modelTable(raw: string[][]): SourceTable | null {
     const parsed = parseCell(cell);
     return Boolean(parsed && parsed.value >= 1900 && parsed.value <= 2099 && Number.isInteger(parsed.value));
   }).length;
-  const headered = firstLabel && belowNumeric >= 1 && (numericCount(rows[0] ?? []) === 0 || yearHeaders >= 1);
+  const textHeader = firstLabel
+    && belowNumeric === 0
+    && rows.slice(1).length >= 2
+    && (rows[0] ?? []).filter((cell) => cell.trim()).length >= 2
+    && (rows[0] ?? []).every((cell) => !cell.trim() || (!parseCell(cell) && cell.trim().length <= 42));
+  const headered = textHeader || (firstLabel && belowNumeric >= 1 && (numericCount(rows[0] ?? []) === 0 || yearHeaders >= 1));
   const headers = headered
     ? (rows[0] ?? []).map((cell, index) => cell || (index === 0 ? "Item" : `Value ${index}`))
     : (rows[0] ?? []).map((_, index) => (index === 0 ? "Item" : `Value ${index}`));
   const body = (headered ? rows.slice(1) : rows).filter((row) => row.some(Boolean));
   if (body.length < 2) return null;
   return { headers, rows: body };
+}
+
+/** A written table whose cells are words, not a chart. */
+export function tableHasNumbers(table: SourceTable): boolean {
+  return table.rows.some((row) => row.slice(1).some((cell) => parseCell(cell)));
 }
 
 function pickTable(tables: string[][][]): SourceTable | null {
@@ -739,16 +760,47 @@ async function imagesOn(zip: JSZip, rels: string, xml: string): Promise<SourceIm
   return images;
 }
 
+function normLine(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+/** A line repeated on most slides, even when it is longer than a classic footer. */
 function runningFooter(slides: SourceSlide[]): string {
   const counts = new Map<string, number>();
   for (const slide of slides) {
-    const tail = slide.context.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
-    if (!tail || tail.length > 60) continue;
-    counts.set(tail, (counts.get(tail) ?? 0) + 1);
+    const seen = new Set<string>();
+    const lines = slide.context.split("\n");
+    for (const piece of slide.pieces ?? []) {
+      if (piece.kind === "prose") lines.push(...piece.text.split("\n"));
+      else if (piece.kind === "card") lines.push(piece.title, ...piece.detail.split("\n"));
+    }
+    for (const line of lines) {
+      const key = normLine(line);
+      if (key.length < 28 || key.length > 180 || seen.has(key)) continue;
+      seen.add(key);
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
   }
   const top = [...counts.entries()].sort((left, right) => right[1] - left[1])[0];
-  if (!top || top[1] < Math.max(3, Math.ceil(slides.length * 0.4))) return "";
+  if (!top || top[1] < Math.max(3, Math.ceil(slides.length * 0.5))) return "";
   return top[0];
+}
+
+function withoutLine(text: string, line: string): string {
+  if (!line) return text;
+  return text.split("\n").map((item) => item.trim()).filter((item) => item && normLine(item) !== line).join("\n");
+}
+
+function stripLine(piece: SlidePiece, line: string): SlidePiece | null {
+  if (!line) return piece;
+  if (piece.kind === "prose") {
+    const text = withoutLine(piece.text, line);
+    return text ? { kind: "prose", text } : null;
+  }
+  if (piece.kind === "card") return normLine(piece.title) === line ? null : piece;
+  const points = piece.points.filter((point) => normLine(point) !== line);
+  if (!points.length) return null;
+  return { ...piece, title: normLine(piece.title) === line ? "" : piece.title, points };
 }
 
 const STAT_LINE = /^((?:[$£€]\s*)?\d[\d,]*(?:\.\d+)?(?:%|\+|(?:\s*[MKmk]))?)\s+(.+)$/;
@@ -765,8 +817,8 @@ function asCard(text: string): SlidePiece | null {
   if (!lines.length || lines.length > 4) return null;
   if (lines.some((line) => /^[•●▪‣]/.test(line) || line.length > 120)) return null;
   const head = lines[0] ?? "";
-  if (head.length > 52 || /[.!?]$/.test(head)) return null;
-  if (lines.length === 1 && head.length > 36) return null;
+  if (head.length > 52 || /[.!?]$/.test(head) || (lines.length === 1 && isKicker(head))) return null;
+  if (lines.length === 1 && head.length > 44) return null;
   let title = head;
   let rest = lines.slice(1);
   const second = rest[0] ?? "";
@@ -821,13 +873,179 @@ export function piecesOf(groups: string[]): SlidePiece[] {
       pieces.push(card);
       continue;
     }
-    pieces.push({ kind: "prose", text });
+    pieces.push(...expandProse(text));
   }
-  return coalesce(pieces);
+  return stackExamples(nameLists(coalesce(joinHeads(pieces))));
+}
+
+/** A paragraph that is already a lead plus a list becomes those pieces. One paragraph stays one paragraph. */
+function expandProse(text: string): SlidePiece[] {
+  const blocks = copyBlocks(text);
+  if (blocks.length === 1 && blocks[0]?.kind === "prose") return [{ kind: "prose", text }];
+  return blocks.map((block) =>
+    block.kind === "list"
+      ? { kind: "list" as const, title: "", points: block.points }
+      : { kind: "prose" as const, text: block.text },
+  );
+}
+
+/** "The actual goal" written on the line above its points is the list title. */
+function nameLists(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index];
+    const next = pieces[index + 1];
+    if (
+      piece?.kind === "prose" &&
+      next?.kind === "list" &&
+      !next.title.trim() &&
+      !piece.text.includes("\n") &&
+      piece.text.length <= 60 &&
+      !/[.!?]$/.test(piece.text.trim())
+    ) {
+      out.push({ ...next, title: piece.text.trim() });
+      index += 1;
+      continue;
+    }
+    if (piece) out.push(piece);
+  }
+  return out;
+}
+
+function exampleLine(piece: SlidePiece): string {
+  if (piece.kind === "prose") {
+    const text = piece.text.trim();
+    if (!text.includes("\n") && text.length >= 18 && text.length <= 140 && !/[.!?]$/.test(text)) return text;
+  }
+  if (piece.kind === "card" && !piece.detail && !piece.display && !piece.title.includes("\n")) {
+    const text = piece.title.trim();
+    if (text.length >= 28 && text.length <= 140 && !laneHead(text) && !/[.!?]$/.test(text)) return text;
+  }
+  return "";
+}
+
+/** Reason-code lines were separate shapes. They read as one list, and short labels stay chips. */
+function stackExamples(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  let run: SlidePiece[] = [];
+  const flush = () => {
+    const lines = run.map((piece) => exampleLine(piece)).filter(Boolean);
+    const long = lines.filter((line) => line.length >= 28);
+    if (lines.length >= 3 && long.length >= 2) out.push({ kind: "list", title: "", points: lines });
+    else out.push(...run);
+    run = [];
+  };
+  for (const piece of pieces) {
+    if (exampleLine(piece)) {
+      run.push(piece);
+      continue;
+    }
+    flush();
+    out.push(piece);
+  }
+  flush();
+  return out;
 }
 
 type CardPiece = Extract<SlidePiece, { kind: "card" }>;
 type ListPiece = Extract<SlidePiece, { kind: "list" }>;
+
+function laneHead(title: string): boolean {
+  const text = title.trim();
+  return /^[A-Z]{3,12}$/.test(text) || text.includes("·");
+}
+
+function sentencePiece(piece: SlidePiece): piece is Extract<SlidePiece, { kind: "prose" }> {
+  return piece.kind === "prose" && !piece.text.includes("\n") && piece.text.length <= 220 && /[.!?]["”]?$/.test(piece.text.trim());
+}
+
+function detailProse(piece: SlidePiece): piece is Extract<SlidePiece, { kind: "prose" }> {
+  if (piece.kind !== "prose") return false;
+  const lines = piece.text.split("\n").map((line) => line.trim()).filter(Boolean);
+  return lines.length >= 2 && lines.length <= 4 && lines.every((line) => line.length <= 140 && /[.!?]["”]?$/.test(line));
+}
+
+function pureStat(text: string): string {
+  const match = text.trim().match(/^((?:[$£€]\s*)?\d[\d,]*(?:\.\d+)?(?:%|\+|(?:\s*[MKmk]))?)$/);
+  return match ? (match[1] ?? "").replace(/\s+/g, "") : "";
+}
+
+/** A heading and the sentence under it were separate shapes. Keep them as one card. */
+function foldBundle(bundle: SlidePiece[]): CardPiece {
+  const cards = bundle.filter((piece): piece is CardPiece => piece.kind === "card");
+  const first = cards[0]!;
+  const stat = first.display ? "" : pureStat(first.title);
+  let title = first.title;
+  let label = first.label;
+  const display = first.display || stat;
+  const second = cards[1];
+  const role = Boolean(second && laneHead(first.title) && !second.title.includes("\n") && second.title.length <= 22 && !/\d/.test(second.title) && !/[,;]/.test(second.title));
+  const usedSecond = Boolean(second && ((stat && !second.display && !second.title.includes("\n")) || role));
+  if (stat && second && !second.display && !second.title.includes("\n")) {
+    label = second.title.trim();
+    title = label;
+  } else if (role && second) title = `${first.title}\n${second.title.trim()}`;
+  const details: string[] = [];
+  let skipped = false;
+  for (const piece of bundle) {
+    if (piece === first) continue;
+    if (piece.kind === "card" && usedSecond && !skipped) {
+      skipped = true;
+      continue;
+    }
+    if (piece.kind === "card") details.push(piece.title);
+    else if (piece.kind === "prose") details.push(piece.text.trim());
+  }
+  return { kind: "card", title, detail: details.join("\n"), display, label: display ? label : "" };
+}
+
+function joinHeads(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  let index = 0;
+  while (index < pieces.length) {
+    const start = pieces[index];
+    if (!start || start.kind !== "card" || start.detail) {
+      if (start) out.push(start);
+      index += 1;
+      continue;
+    }
+    const bundle: SlidePiece[] = [start];
+    let cursor = index + 1;
+    let sawSentence = false;
+    while (cursor < pieces.length && bundle.length < 8) {
+      const next = pieces[cursor];
+      if (!next || next.kind === "list" || (next.kind === "card" && next.detail)) break;
+      if (next.kind === "card") {
+        if (laneHead(next.title) || (sawSentence && !laneHead(start.title))) break;
+        const ownsNext = laneHead(start.title) || (bundle.length === 1 && Boolean(pureStat(start.title)));
+        if (!ownsNext) break;
+        bundle.push(next);
+        cursor += 1;
+        continue;
+      }
+      if (!sentencePiece(next) && !detailProse(next)) break;
+      if (bundle[bundle.length - 1]?.kind === "prose") break;
+      bundle.push(next);
+      sawSentence = true;
+      cursor += 1;
+      if (next.text.includes("\n")) break;
+    }
+    if (!sawSentence && !(laneHead(start.title) && bundle.length > 1)) {
+      const follow = pieces[index + 1];
+      if (follow?.kind === "list" && !follow.title.trim()) {
+        out.push({ ...follow, title: start.title });
+        index += 2;
+        continue;
+      }
+      out.push(start);
+      index += 1;
+      continue;
+    }
+    out.push(foldBundle(bundle));
+    index = cursor;
+  }
+  return out;
+}
 
 export type PieceBand =
   | { kind: "prose"; text: string; height: number }
@@ -906,11 +1124,12 @@ function proseHeight(text: string, type: PieceType): number {
 
 function listHeight(items: ListPiece[], type: PieceType): number {
   const width = columnWidth(items.length) - 40;
+  const timed = items.filter((item) => isTimeTitle(item.title)).length >= 2;
   return Math.max(...items.map((item) => {
     const titleLines = item.title ? textLines(item.title, type.column, columnWidth(items.length)) : 0;
     const points = item.points.reduce((count, point) => count + textLines(point, type.bullet, width), 0);
     return lineStack(titleLines, type.column, 1.25, 2) + (titleLines ? 10 : 0) + lineStack(points, type.bullet, 1.4, 8);
-  }));
+  })) + (timed ? 40 : 0);
 }
 
 function cardHeight(item: CardPiece, type: PieceType, across: number): number {
@@ -925,12 +1144,20 @@ function cardHeight(item: CardPiece, type: PieceType, across: number): number {
   return 36 + lineStack(title, type.cardTitle, 1.3, 2) + 6 + lineStack(detail, type.cardBody, 1.4, 2);
 }
 
+/** How many cards share a row. Four tiles are a square. Two fill the row. Chips stay four across. */
+export function gridAcross(tone: "stat" | "tiles" | "chips", count: number): number {
+  if (count <= 1) return 1;
+  if (tone === "chips") return Math.min(4, count);
+  if (count === 4 || count === 2) return 2;
+  return Math.min(3, count);
+}
+
 function cardsHeight(items: CardPiece[], tone: "stat" | "tiles" | "chips", type: PieceType): number {
-  const across = tone === "chips" ? 4 : 3;
+  const across = gridAcross(tone, items.length);
   let height = 0;
   for (let row = 0; row < items.length; row += across) {
     const slice = items.slice(row, row + across);
-    const wide = slice.length === 1 ? 1 : across;
+    const wide = slice.length;
     const rowH = Math.max(...slice.map((item) => cardHeight(item, type, wide)));
     height += rowH + (height ? GRID_GAP : 0);
   }
@@ -941,6 +1168,11 @@ function bandHeight(band: PieceBand, type: PieceType): number {
   if (band.kind === "prose") return proseHeight(band.text, type);
   if (band.kind === "lists") return listHeight(band.items, type);
   return cardsHeight(band.items, band.tone, type);
+}
+
+/** The last short paragraph is drawn as a bar, so the fit math keeps that padding. */
+function closingLift(band: PieceBand, index: number, count: number): number {
+  return index === count - 1 && index > 0 && band.kind === "prose" && band.text.length <= 240 ? 16 : 0;
 }
 
 /** Group cards and lists the way the slide will draw them, with a height that must fit 720. */
@@ -973,11 +1205,85 @@ export function pieceBands(pieces: SlidePiece[]): PieceBand[] {
     bands.push({ kind: "prose", text: piece.text, height: proseHeight(piece.text, PIECE_TYPE.read) });
     index += 1;
   }
-  return bands;
+  return joinLoneStat(bands);
+}
+
+/** One stat sitting between tiles joins that grid, so four diagnosis cards stay a square. */
+function joinLoneStat(bands: PieceBand[]): PieceBand[] {
+  const out: PieceBand[] = [];
+  for (let index = 0; index < bands.length; index += 1) {
+    const band = bands[index];
+    const prev = out[out.length - 1];
+    const next = bands[index + 1];
+    if (
+      band?.kind === "cards" &&
+      band.tone === "stat" &&
+      band.items.length === 1 &&
+      prev?.kind === "cards" &&
+      prev.tone === "tiles" &&
+      next?.kind === "cards" &&
+      next.tone === "tiles"
+    ) {
+      const items = [...prev.items, ...band.items, ...next.items];
+      out[out.length - 1] = { kind: "cards", tone: "tiles", items, height: cardsHeight(items, "tiles", PIECE_TYPE.read) };
+      index += 1;
+      continue;
+    }
+    if (band) out.push(band);
+  }
+  return out;
+}
+
+/** Today on the left and Tomorrow on the right, when both headings are on the slide. */
+export function compareSplit(pieces: SlidePiece[]): { before: SlidePiece[]; left: SlidePiece[]; right: SlidePiece[] } | null {
+  const leftAt = pieces.findIndex((piece) => piece.kind === "card" && /^today\b/i.test(piece.title.trim()));
+  const rightAt = pieces.findIndex((piece) => piece.kind === "card" && /^tomorrow\b/i.test(piece.title.trim()));
+  if (leftAt < 0 || rightAt <= leftAt || leftAt > 1) return null;
+  return { before: pieces.slice(0, leftAt), left: pieces.slice(leftAt, rightAt), right: pieces.slice(rightAt) };
+}
+
+export type CardFace = "" | "green" | "amber" | "red" | "ink";
+
+/** The color is the word they already wrote. Nothing is renamed. */
+export function cardFace(title: string): CardFace {
+  const head = title.trim().split("\n")[0] ?? "";
+  if (/^green\b/i.test(head)) return "green";
+  if (/^amber\b/i.test(head)) return "amber";
+  if (/^red\b/i.test(head)) return "red";
+  if (/^today\b/i.test(head)) return "ink";
+  return "";
+}
+
+/** Day and week headings are a sequence, in the order they were written. */
+export function isTimeTitle(title: string): boolean {
+  return /^(?:days?|weeks?)\b/i.test(title.trim());
+}
+
+/** One hero figure beside the cards and list that explain it. A row of figures stays a row. */
+export function heroAside(pieces: SlidePiece[]): { stat: CardPiece; rest: SlidePiece[] } | null {
+  const first = pieces[0];
+  if (!first || first.kind !== "card" || !first.display) return null;
+  const rest = pieces.slice(1);
+  if (rest.length < 1 || rest.length > 4) return null;
+  if (rest.some((piece) => piece.kind === "card" && Boolean(piece.display))) return null;
+  return { stat: first, rest };
 }
 
 /** Pixel height of a card slide at one type step, including the title and padding. */
-export function occupy(pieces: SlidePiece[], fit: PieceFit, options: { title: string; continued: boolean }): number {
+function stackHeight(pieces: SlidePiece[], type: PieceType): number {
+  const bands = pieceBands(pieces);
+  let height = 0;
+  bands.forEach((band, index) => {
+    if (index) height += BAND_GAP;
+    const lift = closingLift(band, index, bands.length);
+    if (band.kind === "cards") {
+      height += band.items.reduce((total, item, itemIndex) => total + cardHeight(item, type, 2) + (itemIndex ? GRID_GAP : 0), 0) + lift;
+    } else height += bandHeight(band, type) + lift;
+  });
+  return height;
+}
+
+export function occupy(pieces: SlidePiece[], fit: PieceFit, options: { title: string; continued: boolean; eyebrow?: boolean }): number {
   const type = PIECE_TYPE[fit];
   let height = 40 + 36;
   let bands = 0;
@@ -987,14 +1293,34 @@ export function occupy(pieces: SlidePiece[], fit: PieceFit, options: { title: st
     bands += 1;
   };
   if (options.continued) add(22);
+  if (options.eyebrow) add(22);
   if (options.title.trim()) add(lineStack(textLines(options.title, type.title, CONTENT), type.title, 1.12, 2));
-  for (const band of pieceBands(pieces)) add(bandHeight(band, type));
+  const compare = compareSplit(pieces);
+  if (compare) {
+    const before = pieceBands(compare.before);
+    before.forEach((band, index) => add(bandHeight(band, type) + closingLift(band, index, before.length)));
+    add(Math.max(stackHeight(compare.left, type), stackHeight(compare.right, type)));
+    return height + 12;
+  }
+  const aside = heroAside(pieces);
+  if (aside) {
+    const restBands = pieceBands(aside.rest);
+    let rest = 0;
+    restBands.forEach((band, index) => {
+      if (index) rest += BAND_GAP;
+      rest += bandHeight(band, type) + closingLift(band, index, restBands.length);
+    });
+    add(Math.max(cardHeight(aside.stat, type, 2), rest));
+    return height + 12;
+  }
+  const main = pieceBands(pieces);
+  main.forEach((band, index) => add(bandHeight(band, type) + closingLift(band, index, main.length)));
   return height + 12;
 }
 
 /** Roomy when the larger type still fits. Otherwise the reading size. */
-export function pieceFit(slide: Pick<SourceSlide, "pieces" | "title" | "context">): PieceFit {
-  const options = { title: slide.title, continued: isContinued(slide as SourceSlide) };
+export function pieceFit(slide: Pick<SourceSlide, "pieces" | "title" | "context"> & { eyebrow?: string }): PieceFit {
+  const options = { title: slide.title, continued: isContinued(slide as SourceSlide), eyebrow: Boolean(slide.eyebrow) };
   return occupy(slide.pieces ?? [], "roomy", options) <= FIT_LIMIT ? "roomy" : "read";
 }
 
@@ -1140,7 +1466,7 @@ function spreadPieces(slides: SourceSlide[]): SourceSlide[] {
   const out: SourceSlide[] = [];
   for (const slide of slides) {
     const pieces = slide.pieces ?? [];
-    if (!pieces.length || slide.chart || slide.images.length > 0) {
+    if (!pieces.length || slide.chart || slide.table || slide.images.length > 0) {
       out.push(slide);
       continue;
     }
@@ -1199,16 +1525,22 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     let title = (blocks.find((block) => block.role === "title")?.text ?? "").split("\n")[0]?.trim() ?? "";
     let body = blocks.filter((block) => block.role === "body");
     if (!title) {
-      const first = body[0];
-      const lines = first?.text.split("\n").map((line) => line.trim()).filter(Boolean) ?? [];
-      const head = lines[0] ?? "";
-      if (head && head.length <= 80) {
-        title = head;
-        const restOfFirst = lines.slice(1).join("\n");
-        body = [
-          ...(restOfFirst ? [{ role: "body" as const, text: restOfFirst }] : []),
-          ...body.slice(1),
-        ];
+      const subject = subjectFrom(body);
+      if (subject) {
+        title = subject.title;
+        body = body.filter((_, index) => !subject.drop.includes(index));
+      } else {
+        const first = body[0];
+        const lines = first?.text.split("\n").map((line) => line.trim()).filter(Boolean) ?? [];
+        const head = lines[0] ?? "";
+        if (head && head.length <= 80) {
+          title = head;
+          const restOfFirst = lines.slice(1).join("\n");
+          body = [
+            ...(restOfFirst ? [{ role: "body" as const, text: restOfFirst }] : []),
+            ...body.slice(1),
+          ];
+        }
       }
     }
     if (!title && named) title = named;
@@ -1240,16 +1572,21 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
   const footer = runningFooter(slides);
   slides.forEach((slide, index) => {
     if (footer) {
-      slide.context = slide.context.split("\n").map((line) => line.trim()).filter((line) => line && line !== footer).join("\n");
+      slide.context = withoutLine(slide.context, footer);
+      slide.pieces = (slide.pieces ?? []).flatMap((piece) => {
+        const next = stripLine(piece, footer);
+        return next ? [next] : [];
+      });
     }
+    const titleFigures = slide.title.includes("\n") ? [] : figuresIn(slide.title, slide.title);
     slide.numbers = dropEchoes(
-      [...figuresIn(slide.title, slide.title), ...figuresIn(slide.context, slide.title)],
+      [...titleFigures, ...figuresIn(slide.context, slide.title)].filter((number) => !shownOnCard(slide.pieces ?? [], number)),
       slide.chart,
     );
     const textLen = `${slide.title} ${slide.context}`.trim().length;
     slide.picture = (slide.images.length > 0 || markedPicture[index] === true) && textLen < 12 && !slide.chart && slide.numbers.length === 0;
   });
-  const shaped = markPace(spreadPieces(spreadPictures(titlePass(slides))));
+  const shaped = markPace(spreadPieces(spreadPictures(headlinePass(titlePass(slides)))));
   const title = shaped.find((slide) => slide.title.trim())?.title.trim() || fileTitle(fileName);
   const deck: SourceDeck = { title: title.slice(0, 80), intent: "", slides: shaped };
   deck.intent = shaped.length ? intentOf(shaped, deck.title) : "";
@@ -1263,6 +1600,45 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     ? `Read ${shaped.length} ${shaped.length === 1 ? "slide" : "slides"} from ${fileName || "the deck"}. ${charts} ${charts === 1 ? "chart" : "charts"}, ${figures} ${figures === 1 ? "figure" : "figures"}.`
     : `${fileName || "That deck"} had no slides.`;
   return { deck, text, note };
+}
+
+function shownOnCard(pieces: SlidePiece[], number: SourceNumber): boolean {
+  const display = number.display.replace(/\s+/g, "");
+  if (!display) return false;
+  return pieces.some((piece) => piece.kind === "card" && piece.display.replace(/\s+/g, "") === display);
+}
+
+function isWordmark(line: string): boolean {
+  const text = line.trim();
+  return text.length >= 3 && text.length <= 22 && !/\s/.test(text) && !/\d/.test(text) && /^[A-Z][A-Za-z'’&.-]*$/.test(text);
+}
+
+function isKicker(line: string): boolean {
+  const text = line.trim();
+  if (text.length < 12 || text.length > 90) return false;
+  if (!/[·|]/.test(text) && text.length < 28) return false;
+  const letters = text.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 8) return false;
+  return letters.replace(/[^A-Z]/g, "").length / letters.length >= 0.8;
+}
+
+/** A brand word and an all-caps kicker do not beat the subject written under them. */
+function subjectFrom(blocks: Block[]): { title: string; drop: number[] } | null {
+  const heads = blocks.slice(0, 5).map((block) => block.text.split("\n").map((line) => line.trim()).filter(Boolean));
+  for (let index = 0; index < heads.length; index += 1) {
+    const lines = heads[index] ?? [];
+    const stack = lines.length >= 2 && lines.length <= 3 && lines.every((line) => line.length <= 52 && /[.!?]$/.test(line));
+    if (!stack) continue;
+    const earlier = heads.slice(0, index);
+    const chrome = earlier.every((item) => item.length === 1 && (isWordmark(item[0] ?? "") || isKicker(item[0] ?? "")));
+    if (earlier.length && !chrome) return null;
+    const drop = [index];
+    earlier.forEach((item, place) => {
+      if (item.length === 1 && isWordmark(item[0] ?? "")) drop.push(place);
+    });
+    return { title: lines.join("\n"), drop };
+  }
+  return null;
 }
 
 function personName(text: string): string {
@@ -1289,6 +1665,86 @@ function openingName(pieces: SlidePiece[]): string {
     if (piece.kind === "card" && !piece.detail && !piece.display && !piece.title.includes("\n") && personName(piece.title)) return piece.title.trim();
   }
   return "";
+}
+
+function sectionLabel(title: string): boolean {
+  const text = title.trim();
+  if (!text || text.includes("\n") || text.length > 56 || /[.!?]$/.test(text)) return false;
+  const letters = text.replace(/[^A-Za-z]/g, "");
+  if (letters.length < 4) return false;
+  return letters.replace(/[^A-Z]/g, "").length / letters.length >= 0.8;
+}
+
+function headlineLine(piece: SlidePiece): string {
+  if (piece.kind === "prose" && !piece.text.includes("\n")) {
+    const text = piece.text.trim();
+    if (text.length >= 24 && text.length <= 140 && /[a-z]/.test(text) && !isKicker(text)) return text;
+  }
+  if (piece.kind === "card" && !piece.detail && !piece.display && !piece.title.includes("\n")) {
+    const text = piece.title.trim();
+    if (text.length >= 24 && text.length <= 90 && /[a-z]/.test(text) && !laneHead(text)) return text;
+  }
+  return "";
+}
+
+/** "80% in 24h, 95% in 48h" stays two figures. The words around them stay. */
+function liftRates(pieces: SlidePiece[]): SlidePiece[] {
+  const out: SlidePiece[] = [];
+  const rate = /^(.*?):\s*(\d+%)\s+in\s+(\d+\s*h),\s*(\d+%)\s+in\s+(\d+\s*h)\.?\s*(.*)$/i;
+  for (const piece of pieces) {
+    if (piece.kind !== "prose" || !piece.text.split("\n").some((line) => rate.test(line.trim()))) {
+      out.push(piece);
+      continue;
+    }
+    const pending: string[] = [];
+    const flush = () => {
+      if (!pending.length) return;
+      out.push({ kind: "prose", text: pending.join("\n") });
+      pending.length = 0;
+    };
+    for (const line of piece.text.split("\n")) {
+      const match = line.trim().match(rate);
+      if (!match) {
+        if (line.trim()) pending.push(line.trim());
+        continue;
+      }
+      flush();
+      const head = (match[1] ?? "").trim();
+      const within = (hour: string) => `${head} in ${hour.replace(/\s+/g, "")}`;
+      out.push({ kind: "card", title: head, detail: "", display: match[2] ?? "", label: within(match[3] ?? "") });
+      out.push({ kind: "card", title: head, detail: "", display: match[4] ?? "", label: within(match[5] ?? "") });
+      const tail = (match[6] ?? "").trim();
+      if (tail) out.push({ kind: "prose", text: tail });
+    }
+    flush();
+  }
+  return out;
+}
+
+function dropFirstLine(context: string, line: string): string {
+  const lines = context.split("\n");
+  const at = lines.findIndex((item) => item.trim() === line.trim());
+  if (at < 0) return context;
+  lines.splice(at, 1);
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/** An all-caps section name stays the eyebrow. The sentence under it becomes the title. */
+function headlinePass(slides: SourceSlide[]): SourceSlide[] {
+  return slides.map((slide) => {
+    if (slide.index === 1 || slide.chart) return slide;
+    const pieces = slide.pieces ?? [];
+    const first = pieces[0];
+    if (first?.kind === "prose" && !first.text.includes("\n") && isKicker(first.text.trim())) {
+      const line = first.text.trim();
+      const next = slide.title.includes("\n") ? liftRates(pieces.slice(1)) : pieces.slice(1);
+      return { ...slide, eyebrow: line, pieces: next, context: dropFirstLine(slide.context, line) };
+    }
+    if (!first || !sectionLabel(slide.title)) return slide;
+    const line = headlineLine(first);
+    if (!line) return slide;
+    return { ...slide, eyebrow: slide.title.trim(), title: line, pieces: pieces.slice(1), context: dropFirstLine(slide.context, line) };
+  });
 }
 
 /** Slide 1 is the title and the presenter. Any other opening words move to the next slide. */

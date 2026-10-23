@@ -140,6 +140,8 @@ export type SourceSlide = {
   /** 1-based position in the file. */
   index: number;
   title: string;
+  /** A short section label above the title, such as DIAGNOSIS. Empty when the title already says it. */
+  eyebrow?: string;
   context: string;
   numbers: SourceNumber[];
   chart: SourceChart | null;

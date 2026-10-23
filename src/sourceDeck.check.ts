@@ -1,7 +1,7 @@
 import PptxGenJS from "pptxgenjs";
 import type { SourceSlide } from "./book.ts";
 import { readDeckText } from "./parse.ts";
-import { addSlidePictures, bulletLines, canFlip, chartSentence, copyBlocks, deleteSlide, duplicateSlide, imageSize, isSource, leadCopy, mergeSlides, moveSlide, pictureLayout, pieceDensity, piecesOf, presentKind, readSourceDeck, showSlide, slideRead, slideShow, sourceSummary, tableFromSlide } from "./sourceDeck.ts";
+import { addSlidePictures, bulletLines, canFlip, cardFace, chartSentence, compareSplit, copyBlocks, deleteSlide, duplicateSlide, heroAside, imageSize, isSource, isTimeTitle, leadCopy, mergeSlides, moveSlide, pictureLayout, pieceDensity, piecesOf, presentKind, readSourceDeck, showSlide, slideRead, slideShow, sourceSummary, tableFromSlide } from "./sourceDeck.ts";
 
 const failures: string[] = [];
 const expect = (label: string, actual: unknown, wanted: unknown) => {
@@ -343,6 +343,147 @@ async function cards() {
 }
 
 await cards();
+
+const lanes = piecesOf([
+  "GREEN",
+  "Auto-approve",
+  "Known customer; device on policy; first claim in period; IMEI match; no velocity.",
+  "Minutes",
+  "SLA under 4 hours",
+  "CS says: “Approved, device and account match.”",
+  "AMBER",
+  "Assisted review",
+  "Multi-device household; address or email drift; model disagrees with rules.",
+]);
+expect("lane count", lanes.length, 2);
+expect("green lane", lanes[0]?.kind === "card" ? lanes[0].title : "", "GREEN\nAuto-approve");
+expect("green keeps the rule", lanes[0]?.kind === "card" ? lanes[0].detail.includes("Known customer") && lanes[0].detail.includes("SLA under 4 hours") : false, true);
+expect("amber lane", lanes[1]?.kind === "card" ? lanes[1].title : "", "AMBER\nAssisted review");
+
+const ask = piecesOf([
+  "$2M",
+  "Annual claim-cost reduction",
+  "COO target, via a 90-day Product proposal.",
+]);
+expect("ask is one card", ask.length, 1);
+expect("ask display", ask[0]?.kind === "card" ? ask[0].display : "", "$2M");
+expect("ask label", ask[0]?.kind === "card" ? ask[0].label : "", "Annual claim-cost reduction");
+includes("ask detail", ask[0]?.kind === "card" ? ask[0].detail : "", "COO target");
+
+const signals = piecesOf(["Customer history", "Device history", "Address match", "Payment method"]);
+expect("signal chips stay apart", signals.length, 4);
+
+const constraint = piecesOf([
+  "Work within the constraints",
+  "Existing platform takes new validation rules.\nExternal fraud intelligence needs extra investment.\nNo auto-decline in v1.",
+]);
+expect("constraint is one list", constraint.length, 1);
+expect("constraint title", constraint[0]?.kind === "list" ? constraint[0].title : "", "Work within the constraints");
+includes("constraint point", constraint[0]?.kind === "list" ? constraint[0].points.join(" ") : "", "No auto-decline");
+
+const reasons = piecesOf([
+  "Reason codes let CS explain every decision out loud",
+  "Agents never see a raw model score.",
+  "Second claim on this IMEI in 90 days",
+  "Email is not on the enrolled account; this IMEI has been used with other emails",
+  "Shipping address differs from the enrolled address",
+  "Household has N enrolled devices; this is claim K this year, consistent with the policy",
+]);
+expect("reason lead stays", reasons[0]?.kind === "prose" ? reasons[0].text : "", "Reason codes let CS explain every decision out loud");
+expect("reason sentence stays", reasons[1]?.kind === "prose" ? reasons[1].text : "", "Agents never see a raw model score.");
+expect("reasons are one list", reasons[2]?.kind === "list" ? reasons[2].points.length : 0, 4);
+includes("reason example", reasons[2]?.kind === "list" ? reasons[2].points[0] ?? "" : "", "Second claim");
+
+const compared = compareSplit([
+  { kind: "card", title: "Today · one pile\nEvery claim", detail: "", display: "", label: "" },
+  { kind: "prose", text: "Time burns on honest customers." },
+  { kind: "card", title: "Tomorrow · route by risk", detail: "", display: "", label: "" },
+  { kind: "card", title: "GREEN · auto-approve", detail: "Minutes", display: "", label: "" },
+]);
+expect("today column", compared?.left.length ?? 0, 2);
+expect("tomorrow column", compared?.right[1]?.kind === "card" ? compared.right[1].title : "", "GREEN · auto-approve");
+const aside = heroAside([
+  { kind: "card", title: "Annual claim-cost reduction", detail: "COO target.", display: "$2M", label: "Annual claim-cost reduction" },
+  { kind: "card", title: "Hold the customer and partner outcomes", detail: "Hold CSAT.", display: "", label: "" },
+  { kind: "list", title: "Work within the constraints", points: ["No auto-decline in v1."] },
+]);
+expect("hero sits aside", aside?.stat.display ?? "", "$2M");
+expect("hero keeps the list", aside?.rest[1]?.kind === "list" ? aside.rest[1].title : "", "Work within the constraints");
+
+const headed = piecesOf([
+  "Work within the constraints",
+  "• Existing platform takes new validation rules.\n• External fraud intelligence needs extra investment.\n• No auto-decline in v1.",
+]);
+expect("heading stays on the list", headed.length, 1);
+expect("list title", headed[0]?.kind === "list" ? headed[0].title : "", "Work within the constraints");
+expect("list points", headed[0]?.kind === "list" ? headed[0].points.length : 0, 3);
+
+const tensions = piecesOf([
+  "The lanes resolve the four tensions",
+  "Fraud and CX",
+  "Speed where risk is low. Scrutiny where risk is high.",
+]);
+expect("subtitle stays itself", tensions[0]?.kind === "card" ? tensions[0].detail : "x", "");
+expect("tension keeps its sentence", tensions[1]?.kind === "card" && tensions[1].title === "Fraud and CX" ? tensions[1].detail : "", "Speed where risk is low. Scrutiny where risk is high.");
+
+async function honest() {
+  const footer = "Likewize Device Protection | Claims cost and experience | 90-day Product proposal | Confidential";
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  pres.layout = "DECK";
+  const cover = pres.addSlide();
+  cover.addText("Likewize", { x: 0.6, y: 0.4, w: 8, h: 0.4, fontSize: 20, fontFace: "Calibri" });
+  cover.addText("DEVICE PROTECTION · 90-DAY PRODUCT PROPOSAL", { x: 0.6, y: 0.9, w: 10, h: 0.4, fontSize: 14, fontFace: "Calibri" });
+  cover.addText([
+    { text: "Faster honest claims.", options: { breakLine: true } },
+    { text: "Tighter fraud.", options: { breakLine: true } },
+    { text: "$2M without the five-day wait." },
+  ], { x: 0.6, y: 1.6, w: 10, h: 1.4, fontSize: 28, fontFace: "Calibri" });
+  cover.addText("Risk-tiered claims on the existing platform.", { x: 0.6, y: 3.4, w: 10, h: 0.4, fontSize: 16, fontFace: "Calibri" });
+  cover.addText("Retailer pilot SLA: 80% in 24h, 95% in 48h. External fraud intelligence parked.", { x: 0.6, y: 3.9, w: 10, h: 0.4, fontSize: 16, fontFace: "Calibri" });
+
+  const cost = pres.addSlide();
+  cost.addText("Cost split", { x: 0.5, y: 0.3, w: 10, h: 0.4, fontSize: 22, fontFace: "Calibri" });
+  cost.addText("Finance and Operations can both be right until the cost is split.", { x: 0.5, y: 0.8, w: 10, h: 0.4, fontSize: 14, fontFace: "Calibri" });
+  cost.addTable([
+    [{ text: "Driver" }, { text: "What to separate" }, { text: "Owner" }],
+    [{ text: "Replacement ASP" }, { text: "Average fulfillment cost" }, { text: "Operations" }],
+    [{ text: "Mix" }, { text: "Repair, replace, reimburse share" }, { text: "Operations" }],
+  ], { x: 0.5, y: 1.4, w: 10, h: 1.6, fontFace: "Calibri" });
+  cost.addText(footer, { x: 0.5, y: 6.6, w: 12, h: 0.3, fontSize: 10, fontFace: "Calibri" });
+
+  for (const title of ["Choices", "Evidence"]) {
+    const slide = pres.addSlide();
+    slide.addText(title, { x: 0.5, y: 0.3, w: 10, h: 0.4, fontSize: 22, fontFace: "Calibri" });
+    slide.addText(`${title} keeps its own sentence.`, { x: 0.5, y: 1, w: 10, h: 0.4, fontSize: 16, fontFace: "Calibri" });
+    slide.addText(footer, { x: 0.5, y: 6.6, w: 12, h: 0.3, fontSize: 10, fontFace: "Calibri" });
+  }
+
+  const read = await readSourceDeck(await pres.write({ outputType: "arraybuffer" }) as ArrayBuffer, "honest.pptx");
+  expect("subject is the cover", read.deck.slides[0]?.title, "Faster honest claims.\nTighter fraud.\n$2M without the five-day wait.");
+  expect("cover stays empty", read.deck.slides[0]?.context ?? "x", "");
+  includes("opening kept", read.deck.slides[1]?.context ?? "", "Risk-tiered claims");
+  expect("opening eyebrow", read.deck.slides[1]?.eyebrow ?? "", "DEVICE PROTECTION · 90-DAY PRODUCT PROPOSAL");
+  expect("kicker left the body", (read.deck.slides[1]?.context ?? "").includes("DEVICE PROTECTION"), false);
+  const rates = (read.deck.slides[1]?.pieces ?? []).filter((piece) => piece.kind === "card" && piece.display.endsWith("%"));
+  expect("pilot rates stay", rates.map((piece) => piece.kind === "card" ? `${piece.display} ${piece.label}` : "").join("|"), "80% Retailer pilot SLA in 24h|95% Retailer pilot SLA in 48h");
+  expect("green face", cardFace("GREEN\nAuto-approve"), "green");
+  expect("amber face", cardFace("AMBER"), "amber");
+  expect("red face", cardFace("RED lane"), "red");
+  expect("today face", cardFace("Today · one pile"), "ink");
+  expect("finance stays plain", cardFace("Finance"), "");
+  expect("day sequence", isTimeTitle("DAYS 1–30"), true);
+  expect("finance is not a day", isTimeTitle("Finance"), false);
+  expect("brand is not the title", read.deck.title.startsWith("Likewize"), false);
+  const tableSlide = read.deck.slides.find((slide) => slide.title === "Cost split");
+  expect("text table headers", tableSlide?.table?.headers.join("|") ?? "", "Driver|What to separate|Owner");
+  expect("text table is not a chart", tableSlide?.chart ?? null, null);
+  expect("text table rows", tableSlide?.table?.rows.length ?? 0, 2);
+  const joined = read.deck.slides.map((slide) => `${slide.context}\n${(slide.pieces ?? []).map((piece) => piece.kind === "prose" ? piece.text : "").join("\n")}`).join("\n");
+  expect("footer removed", joined.includes("Confidential"), false);
+}
+
+await honest();
 
 expect("density light", pieceDensity([{ kind: "prose", text: "One clear point." }], "Hello"), "light");
 const heavyPoints = Array.from({ length: 24 }, (_, index) => `Keep this written point ${"x".repeat(index + 1)}`);

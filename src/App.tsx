@@ -1056,13 +1056,21 @@ function Home({
               <input
                 type="file"
                 accept=".pptx,.ppt"
+                disabled={busy}
                 onChange={(event) => {
                   addFiles([...(event.target.files ?? [])]);
                   event.target.value = "";
                 }}
               />
-              <strong>Drop a PowerPoint</strong>
-              <span>Every slide is kept. Pictures stay on the slide.</span>
+              <span className="lane-arrow" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="26" height="26">
+                  <path d="M12 16V4" />
+                  <path d="M7 9l5-5 5 5" />
+                  <path d="M4 20h16" />
+                </svg>
+              </span>
+              <strong>{busy ? busyLabel : "Drop a PowerPoint here"}</strong>
+              <span>{busy ? "Reading every slide." : "Click to upload. Every slide is kept."}</span>
             </label>
             {files.length > 0 && (
               <ul className="held">
@@ -1078,10 +1086,11 @@ function Home({
               </ul>
             )}
             {issue && <p className="home-issue">{issue}</p>}
-            <button className="home-start" type="submit" disabled={busy || files.length === 0}>
-              {busy ? busyLabel : "Restyle the deck"}
-              {!busy && <span aria-hidden="true">→</span>}
-            </button>
+            {busy ? (
+              <button className="home-start" type="submit" disabled>
+                {busyLabel}
+              </button>
+            ) : null}
           </form>
         </div>
         <HomePreview index={beat} onPause={setPaused} />
