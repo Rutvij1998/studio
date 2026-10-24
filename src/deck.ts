@@ -10,7 +10,7 @@ import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, i
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesProgressList, trackNote, trackTotals } from "./reading";
 import { coverWave } from "./dotWave";
-import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, compareSplit, copyBlocks, figureBody, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceBands, pieceFit, pieceFrame, plotMode, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, compareSplit, compositionOf, copyBlocks, figureBody, fillBandIndex, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, pieceFrame, plotMode, posterPx, proofPx, proofSplit, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers, type PieceBand } from "./sourceDeck";
 
 const INK = "14003B";
 const BRAND = "3200BE";
@@ -2109,6 +2109,10 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
   const size = frame.type;
   const x0 = 0.58;
   const width = 12.17;
+  const floor = 7.5 - 36 / 96;
+  const pieces = source.pieces ?? [];
+  const composition = compositionOf(pieces, source.title);
+  const air = pieceAir(source) && source.images.length === 0;
   let cursor = frame.inch(40);
   if (isContinued(source)) {
     kicker(slide, "Continued", x0, cursor, "C23FC2", type.kicker);
@@ -2131,9 +2135,45 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
     });
     cursor += titleH + frame.inch(16);
   }
-  const paint = (pieces: SlidePiece[], xStart: number, yStart: number, box: number, narrow: boolean) => {
+  const bandInches = (band: PieceBand, narrow: boolean): number => {
+    if (band.kind === "prose") {
+      const parts = frame.proseParts(band.text);
+      let height = 0;
+      parts.forEach((part, index) => {
+        if (index) height += frame.inch(10);
+        height += frame.inch(Math.max(part.height, 18) * (narrow && part.kind !== "list" ? 1.8 : 1));
+      });
+      return height + frame.inch(16);
+    }
+    if (band.kind === "lists") {
+      if (narrow) {
+        const timed = band.items.filter((item) => isTimeTitle(item.title)).length >= 2;
+        return band.items.reduce((total, item) => {
+          const step = timed ? 0.4 : 0;
+          return total + frame.inch(frame.listHeight([item])) + step + frame.inch(12);
+        }, 0);
+      }
+      return frame.inch(frame.listHeight(band.items)) + frame.inch(16);
+    }
+    const across = narrow ? 1 : gridAcross(band.tone, band.items.length);
+    const gap = frame.inch(14);
+    let height = 0;
+    for (let row = 0; row < band.items.length; row += across) {
+      const slice = band.items.slice(row, row + across);
+      height += frame.inch(Math.max(...slice.map((item) => frame.cardHeight(item, narrow ? 2 : slice.length)))) + gap;
+    }
+    return height + frame.inch(2);
+  };
+  const paint = (items: SlidePiece[], xStart: number, yStart: number, box: number, narrow: boolean, grow: "none" | "cards" | "lists" = "none") => {
     let topCursor = yStart;
-    const drawn = pieceBands(pieces);
+    const drawn = pieceBands(items);
+    const fillAt = grow === "lists"
+      ? drawn.findIndex((band) => band.kind === "lists")
+      : grow === "cards"
+        ? fillBandIndex(drawn)
+        : -1;
+    const natural = drawn.reduce((sum, band) => sum + bandInches(band, narrow), 0);
+    const extra = fillAt >= 0 ? Math.max(0, floor - (yStart + natural)) : 0;
     for (let bandIndex = 0; bandIndex < drawn.length; bandIndex += 1) {
       const band = drawn[bandIndex];
       if (!band) continue;
@@ -2178,7 +2218,8 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
         const columns = narrow ? 1 : Math.max(1, band.items.length);
         const gap = frame.inch(16);
         const columnW = (box - gap * (columns - 1)) / columns;
-        const height = frame.inch(frame.listHeight(band.items) * (narrow && band.items.length > 1 ? band.items.length : 1));
+        const height = frame.inch(frame.listHeight(band.items) * (narrow && band.items.length > 1 ? band.items.length : 1))
+          + (!narrow && bandIndex === fillAt ? extra : 0);
         if (narrow) {
           band.items.forEach((item, index) => {
             const titleLines = item.title ? Math.max(1, item.title.split("\n").length) : 0;
@@ -2256,25 +2297,32 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
       const cards = band.items;
       const across = narrow ? 1 : gridAcross(band.tone, cards.length);
       const gap = frame.inch(14);
+      const bonus = bandIndex === fillAt ? extra / Math.max(1, Math.ceil(cards.length / across)) : 0;
       for (let row = 0; row < cards.length; row += across) {
         const slice = cards.slice(row, row + across);
         const cardW = (box - gap * (slice.length - 1)) / slice.length;
         const heights = slice.map((item) => frame.cardHeight(item, narrow ? 2 : slice.length));
-        const rowH = frame.inch(Math.max(...heights));
+        const naturalH = frame.inch(Math.max(...heights));
+        const rowH = naturalH + bonus;
         slice.forEach((item, index) => {
           const x = xStart + index * (cardW + gap);
           const face = cardFace(item.title);
           const faceFill = face === "green" ? "E7F6EF" : face === "amber" ? "FFF4D6" : face === "red" ? "F8E8EE" : face === "ink" ? STAGE : WHITE;
           const faceInk = face === "green" ? "0E6B45" : face === "amber" ? "8A5A00" : face === "red" ? "8E2348" : face === "ink" ? "F4F1FA" : INK;
           const faceBody = face === "ink" ? "D9D3E8" : face ? faceInk : "322C49";
-          slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
-            x, y: topCursor, w: cardW, h: rowH,
-            fill: { color: faceFill },
-            rectRadius: CARD_RADIUS,
-            line: face ? { color: faceFill, width: 0 } : { color: CARD_LINE, width: 0.75 },
-          });
+          const openStat = composition === "metrics" && band.tone === "stat" && !face;
+          if (!openStat) {
+            slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+              x, y: topCursor, w: cardW, h: rowH,
+              fill: { color: faceFill },
+              rectRadius: CARD_RADIUS,
+              line: face ? { color: faceFill, width: 0 } : { color: CARD_LINE, width: 0.75 },
+            });
+          }
           const inset = 0.16;
-          let top = topCursor + 0.12;
+          const shift = bonus > 0.08 && !openStat ? bonus / 2 : 0;
+          const boxBottom = topCursor + naturalH + shift;
+          let top = topCursor + 0.12 + shift;
           if (item.display) {
             const displayH = frame.inch(size.stat);
             slide.addText(item.display, {
@@ -2290,7 +2338,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
             top += labelH + 0.04;
             if (item.detail) {
               slide.addText(item.detail, {
-                x: x + inset, y: top, w: cardW - inset * 2, h: Math.max(0.24, topCursor + rowH - top - 0.1),
+                x: x + inset, y: top, w: cardW - inset * 2, h: Math.max(0.24, boxBottom - top - 0.1),
                 fontFace: "Calibri", fontSize: frame.pt(size.statBody), color: faceBody, margin: 0, valign: "top",
               });
             }
@@ -2305,7 +2353,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
           });
           if (item.detail) {
             slide.addText(item.detail, {
-              x: x + inset, y: top + titleH + 0.04, w: cardW - inset * 2, h: Math.max(0.24, topCursor + rowH - (top + titleH) - 0.12),
+              x: x + inset, y: top + titleH + 0.04, w: cardW - inset * 2, h: Math.max(0.24, boxBottom - (top + titleH) - 0.12),
               fontFace: "Calibri", fontSize: frame.pt(size.cardBody), color: faceBody, margin: 0, valign: "top",
             });
           }
@@ -2316,44 +2364,133 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
     }
     return topCursor;
   };
-  const pieces = source.pieces ?? [];
-  const compare = compareSplit(pieces);
-  const aside = compare ? null : heroAside(pieces);
-  if (compare) {
+  const proof = composition === "proof" ? proofSplit(pieces) : null;
+  const compare = composition === "versus" ? compareSplit(pieces) : null;
+  const aside = composition === "hero" ? heroAside(pieces) : null;
+  const poster = composition === "poster" && pieces[0]?.kind === "prose" ? pieces[0].text : "";
+  if (poster) {
+    const px = posterPx(poster);
+    const chars = Math.max(8, Math.floor(1168 / (px * 0.5)));
+    const lines = poster.split("\n").reduce((total, line) => total + Math.max(1, Math.ceil(line.trim().length / chars)), 0);
+    const textH = Math.max(0.5, (lines * Math.ceil(px * 1.05)) / 96);
+    const y = Math.max(cursor, floor - textH);
+    slide.addText(poster, {
+      x: x0, y, w: width, h: Math.min(textH, floor - y),
+      fontFace: "Calibri", fontSize: frame.pt(px), bold: true, color: INK, margin: 0, valign: "bottom",
+    });
+    cursor = floor;
+  } else if (proof) {
+    const gap = 0.28;
+    const leftW = width * 0.6;
+    const rightW = width - leftW - gap;
+    const regionH = Math.max(1.6, floor - cursor);
+    const px = proofPx(proof.text);
+    const chars = Math.max(8, Math.floor((leftW * 96) / (px * 0.5)));
+    const lines = Math.max(1, Math.ceil(proof.text.trim().length / chars));
+    const textH = Math.min(regionH, (lines * Math.ceil(px * 1.08)) / 96 + 0.06);
+    slide.addText(proof.text, {
+      x: x0, y: cursor + regionH - textH, w: leftW, h: textH,
+      fontFace: "Calibri", fontSize: frame.pt(px), bold: true, color: INK, margin: 0, valign: "bottom",
+    });
+    const card = proof.card;
+    const face = cardFace(card.title);
+    const fill = face === "green" ? "E7F6EF" : face === "amber" ? "FFF4D6" : face === "red" ? "F8E8EE" : face === "ink" ? STAGE : WHITE;
+    const ink = face === "green" ? "0E6B45" : face === "amber" ? "8A5A00" : face === "red" ? "8E2348" : face === "ink" ? "F4F1FA" : INK;
+    const body = face === "ink" ? "D9D3E8" : face ? ink : "322C49";
+    const x = x0 + leftW + gap;
+    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+      x, y: cursor, w: rightW, h: regionH,
+      fill: { color: fill },
+      rectRadius: CARD_RADIUS,
+      line: face ? { color: fill, width: 0 } : { color: CARD_LINE, width: 0.75 },
+    });
+    const displayH = card.display ? frame.inch(size.stat) : 0;
+    const titleText = card.display ? card.label || card.title : card.title;
+    const titleFont = card.display ? size.statLabel : size.cardTitle;
+    const titleH = frame.inch(Math.max(1, titleText.split("\n").length) * Math.ceil(titleFont * 1.25));
+    const detailH = card.detail ? frame.inch(Math.max(1, card.detail.split("\n").length) * Math.ceil(size.cardBody * 1.4) + 8) : 0;
+    let top = cursor + regionH - (displayH + titleH + detailH + 0.2) - 0.16;
+    if (card.display) {
+      slide.addText(card.display, {
+        x: x + 0.18, y: top, w: rightW - 0.36, h: displayH,
+        fontFace: "Calibri", fontSize: frame.pt(size.stat), bold: true, color: ink, margin: 0, valign: "top",
+      });
+      top += displayH;
+    }
+    slide.addText(titleText, {
+      x: x + 0.18, y: top, w: rightW - 0.36, h: titleH,
+      fontFace: "Calibri", fontSize: frame.pt(titleFont), bold: true, color: ink, margin: 0, valign: "top",
+    });
+    if (card.detail) {
+      slide.addText(card.detail, {
+        x: x + 0.18, y: top + titleH + 0.06, w: rightW - 0.36, h: detailH,
+        fontFace: "Calibri", fontSize: frame.pt(size.cardBody), color: body, margin: 0, valign: "top",
+      });
+    }
+    cursor += regionH;
+  } else if (compare) {
     if (compare.before.length) cursor = paint(compare.before, x0, cursor, width, false);
     const gap = 0.22;
     const colW = (width - gap) / 2;
+    const leftNatural = pieceBands(compare.left).reduce((sum, band) => sum + bandInches(band, true), 0);
+    const rightNatural = pieceBands(compare.right).reduce((sum, band) => sum + bandInches(band, true), 0);
+    const splitH = Math.max(leftNatural, rightNatural, air ? floor - cursor : 0, 1);
+    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+      x: x0, y: cursor, w: colW, h: splitH,
+      fill: { color: "F4F1FB" },
+      rectRadius: 0.18,
+      line: { color: "F4F1FB", width: 0 },
+    });
     const left = paint(compare.left, x0, cursor, colW, true);
     const right = paint(compare.right, x0 + colW + gap, cursor, colW, true);
-    cursor = Math.max(left, right);
+    const spineH = Math.max(splitH, left - cursor, right - cursor);
+    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+      x: x0 + colW + gap / 2 - 0.01,
+      y: cursor + 0.08,
+      w: 0.02,
+      h: Math.max(0.3, spineH - 0.16),
+      fill: { color: "C23FC2" },
+      rectRadius: 0.02,
+      line: { color: "C23FC2", width: 0 },
+    });
+    cursor = Math.max(left, right, cursor + splitH);
   } else if (aside) {
     const gap = 0.2;
     const statW = width * 0.34;
     const restEnd = paint(aside.rest, x0 + statW + gap, cursor, width - statW - gap, false);
-    const statH = Math.max(1.6, restEnd - cursor);
+    const statH = Math.max(1.6, restEnd - cursor, source.images.length ? 0 : floor - cursor);
     slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
       x: x0, y: cursor, w: statW, h: statH,
       fill: { color: STAGE },
       rectRadius: CARD_RADIUS,
       line: { color: STAGE, width: 0 },
     });
+    const heroPx = air ? 120 : size.stat;
+    const displayH = frame.inch(heroPx);
+    const labelH = 0.55;
+    const detailH = aside.stat.detail ? 0.7 : 0;
+    const block = displayH + 0.08 + labelH + (detailH ? 0.18 + detailH : 0);
+    let top = cursor + Math.max(0.2, (statH - block) / 2);
     slide.addText(aside.stat.display, {
-      x: x0 + 0.18, y: cursor + 0.18, w: statW - 0.36, h: frame.inch(size.stat),
-      fontFace: "Calibri", fontSize: frame.pt(size.stat), bold: true, color: WHITE, margin: 0, valign: "top",
+      x: x0 + 0.18, y: top, w: statW - 0.36, h: displayH,
+      fontFace: "Calibri", fontSize: frame.pt(heroPx), bold: true, color: WHITE, margin: 0, valign: "top",
     });
-    const labelTop = cursor + 0.22 + frame.inch(size.stat);
+    top += displayH + 0.06;
     slide.addText(aside.stat.label || aside.stat.title, {
-      x: x0 + 0.18, y: labelTop, w: statW - 0.36, h: 0.7,
+      x: x0 + 0.18, y: top, w: statW - 0.36, h: labelH,
       fontFace: "Calibri", fontSize: frame.pt(size.statLabel), bold: true, color: WHITE, margin: 0, valign: "top",
     });
     if (aside.stat.detail) {
       slide.addText(aside.stat.detail, {
-        x: x0 + 0.18, y: labelTop + 0.72, w: statW - 0.36, h: Math.max(0.4, statH - (labelTop + 0.72 - cursor) - 0.16),
+        x: x0 + 0.18, y: top + labelH + 0.16, w: statW - 0.36, h: detailH,
         fontFace: "Calibri", fontSize: frame.pt(size.statBody), color: "D9D3E8", margin: 0, valign: "top",
       });
     }
-    cursor = restEnd;
-  } else cursor = paint(pieces, x0, cursor, width, false);
+    cursor = Math.max(restEnd, cursor + statH);
+  } else {
+    const grow = !air ? "none" : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" ? "cards" : "none";
+    cursor = paint(pieces, x0, cursor, width, false, grow);
+  }
   if (source.images.length && cursor < 6.3) placeKept(slide, source.images, x0, cursor, width, Math.max(0.8, 7.05 - cursor));
 }
 

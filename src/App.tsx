@@ -10,6 +10,7 @@ import { gridChartNote, gridProgress } from "./grid";
 import { rateOutlook, seriesProgressList, trackNote } from "./reading";
 import { markRequest } from "./mark";
 import { addSlidePictures, canFlip, chartSentence, deleteSlide, duplicateSlide, formatPoint, mergeSlides, moveSlide, readSourceDeck, removeSlidePicture, replaceSlides, showSlide, slideRead, slideShow, sourceSummary, type SlideEdit } from "./sourceDeck";
+import { gradeBrief, type GradeMark } from "./critic";
 import { GUIDE_BEATS, GUIDE_MS, HomeBeats, HomePreview } from "./homeGuide";
 
 const W = 1280;
@@ -19,6 +20,31 @@ type Held = { id: string; file: File };
 
 function clip(text: string): string {
   return text.length > 4000 ? `${text.slice(0, 4000).trimEnd()}…` : text;
+}
+
+const originalCache = new Map<string, Promise<string[]>>();
+
+function loadOriginal(file: File): Promise<string[]> {
+  const key = `${file.name}:${file.size}:${file.lastModified}`;
+  const hit = originalCache.get(key);
+  if (hit) return hit;
+  const pending = file.arrayBuffer().then(async (body) => {
+    const response = await fetch("/api/original", {
+      method: "POST",
+      headers: { "content-type": "application/octet-stream" },
+      body,
+    });
+    if (!response.ok) throw new Error("original");
+    const payload = await response.json() as { slides?: unknown };
+    const pages = Array.isArray(payload.slides)
+      ? payload.slides.filter((item): item is string => typeof item === "string" && item.startsWith("data:image/"))
+      : [];
+    if (pages.length === 0) throw new Error("original");
+    return pages;
+  });
+  originalCache.set(key, pending);
+  pending.catch(() => originalCache.delete(key));
+  return pending;
 }
 
 async function attachMark(book: Book): Promise<Book> {
@@ -50,10 +76,37 @@ export function App() {
   const [issue, setIssue] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [presenting, setPresenting] = useState(false);
+  const [comparing, setComparing] = useState(false);
+  const [originals, setOriginals] = useState<string[]>([]);
+  const [originalsReady, setOriginalsReady] = useState(false);
   const [deckName, setDeckName] = useState<string | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [spoken, setSpoken] = useState<{ summary: string; notes: Record<number, string> }>({ summary: "", notes: {} });
+  const comparingRef = useRef(false);
+  const reviewRef = useRef(false);
+  const originalTicket = useRef(0);
+  const toggleCompareRef = useRef<() => void>(() => {});
+  comparingRef.current = comparing;
+  reviewRef.current = reviewOpen;
+  toggleCompareRef.current = () => {
+    if (!comparing && originals.length === 0) setOriginalsReady(false);
+    setComparing((current) => !current);
+  };
   const view = useMemo(() => viewBook(book), [book]);
   const slides = useMemo(() => slidesFor(book), [book]);
   const slide = slides[index] ?? slides[0];
+  const review = useMemo(() => gradeBrief(book.sourceDeck?.slides ?? []), [book.sourceDeck]);
+  const reviewMarks = useMemo(() => {
+    const marks = new Map<number, GradeMark>();
+    for (const mark of review.grade.slides) marks.set(mark.index, { ...mark, note: spoken.notes[mark.index] || mark.note });
+    for (const [key, note] of Object.entries(spoken.notes)) {
+      const at = Number(key);
+      if (!note || marks.has(at) || !review.brief.some((row) => row.index === at)) continue;
+      const title = review.brief.find((row) => row.index === at)?.title || "Slide";
+      marks.set(at, { index: at, title, severity: "sparse", note });
+    }
+    return [...marks.values()].sort((left, right) => left.index - right.index);
+  }, [review, spoken]);
 
   useEffect(() => {
     setIndex((current) => Math.min(current, Math.max(0, slides.length - 1)));
@@ -66,7 +119,19 @@ export function App() {
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
       if (presenting && event.key === "Escape") {
         event.preventDefault();
-        setPresenting(false);
+        if (reviewRef.current) setReviewOpen(false);
+        else if (comparingRef.current) setComparing(false);
+        else setPresenting(false);
+        return;
+      }
+      if (presenting && !event.repeat && (event.key === "c" || event.key === "C") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        toggleCompareRef.current();
+        return;
+      }
+      if (presenting && !event.repeat && (event.key === "g" || event.key === "G") && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault();
+        setReviewOpen((current) => !current);
         return;
       }
       const forward = event.key === "ArrowRight" || event.key === "ArrowDown" || event.key === "PageDown" || (presenting && event.key === " ");
@@ -83,6 +148,50 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, [mode, slides.length, presenting]);
 
+  useEffect(() => {
+    const file = files[0]?.file;
+    if (!comparing || originalsReady || !file) return;
+    const ticket = originalTicket.current;
+    let cancel = false;
+    void loadOriginal(file).then((pages) => {
+      if (cancel || originalTicket.current !== ticket) return;
+      setOriginals(pages);
+      setOriginalsReady(true);
+    }).catch(() => {
+      if (cancel || originalTicket.current !== ticket) return;
+      setOriginals([]);
+      setOriginalsReady(true);
+    });
+    return () => { cancel = true; };
+  }, [comparing, originalsReady, files]);
+
+  useEffect(() => {
+    setSpoken({ summary: "", notes: {} });
+    setReviewOpen(false);
+    const brief = review.brief;
+    if (!brief.length) return;
+    let cancel = false;
+    void fetch("/api/grade", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ slides: brief }),
+    }).then(async (response) => {
+      if (!response.ok || cancel) return;
+      const body = await response.json() as { summary?: unknown; notes?: unknown };
+      if (cancel) return;
+      const notes: Record<number, string> = {};
+      if (Array.isArray(body.notes)) {
+        for (const item of body.notes) {
+          if (!item || typeof item !== "object") continue;
+          const row = item as { index?: unknown; note?: unknown };
+          if (typeof row.index === "number" && typeof row.note === "string") notes[row.index] = row.note;
+        }
+      }
+      setSpoken({ summary: typeof body.summary === "string" ? body.summary : "", notes });
+    }).catch(() => undefined);
+    return () => { cancel = true; };
+  }, [review]);
+
   const patch = (partial: Partial<Book>) => setBook((current) => ({ ...current, ...partial }));
 
   const restyle = async (file: File) => {
@@ -98,6 +207,10 @@ export function App() {
     setBusy(true);
     setBusyLabel("Restyling");
     setIssue(null);
+    setComparing(false);
+    setOriginals([]);
+    setOriginalsReady(false);
+    originalTicket.current += 1;
     try {
       const read = await readSourceDeck(await file.arrayBuffer(), file.name);
       if (read.deck.slides.length === 0) {
@@ -120,6 +233,7 @@ export function App() {
       setUnderstood(`${sourceSummary(next.sourceDeck ?? read.deck)}${next.logo ? ` The ${next.client} mark is on the cover.` : ""}`);
       setIndex(0);
       setMode("studio");
+      setPresenting(true);
     } catch (error) {
       setIssue(error instanceof Error ? error.message : "Could not read that deck.");
     } finally {
@@ -178,7 +292,7 @@ export function App() {
           <strong>{book.client || deckName || "Untitled deck"}</strong>
         </div>
         <div className="top-side">
-          <button type="button" className="ghost" onClick={() => { setPresenting(false); setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
+          <button type="button" className="ghost" onClick={() => { setPresenting(false); setComparing(false); setOriginals([]); setOriginalsReady(false); originalTicket.current += 1; setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
             New deck
           </button>
           <button type="button" className="ghost" onClick={() => setPresenting(true)} disabled={slides.length === 0}>
@@ -221,7 +335,7 @@ export function App() {
           onPrev={() => setIndex((current) => Math.max(0, current - 1))}
           onNext={() => setIndex((current) => Math.min(slides.length - 1, current + 1))}
         >
-          <SlideFrame book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
+          <SlideFrame key={`${slide.id}-${slide.track ?? 0}`} book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
         </Stage>
 
         <aside className="panel">
@@ -267,8 +381,27 @@ export function App() {
         </aside>
       </div>
       {presenting && slide ? (
-        <PresentDeck index={index} count={slides.length} onClose={() => setPresenting(false)}>
-          <SlideFrame book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
+        <PresentDeck
+          index={index}
+          count={slides.length}
+          title={book.client || deckName || "Untitled deck"}
+          saving={saving}
+          comparing={comparing}
+          origin={slide.origin ?? 0}
+          sameOrigin={(slide.origin ?? 0) > 0 && index > 0 && slides[index - 1]?.origin === slide.origin}
+          originalUrl={(slide.origin ?? 0) > 0 ? originals[(slide.origin ?? 1) - 1] ?? "" : ""}
+          originalReady={originalsReady}
+          onClose={() => setPresenting(false)}
+          onPick={(next) => setIndex(Math.max(0, Math.min(slides.length - 1, next)))}
+          onDownload={() => void downloadDeck()}
+          onCompare={() => toggleCompareRef.current()}
+          grade={review.grade.grade}
+          summary={spoken.summary || review.grade.summary}
+          marks={reviewMarks}
+          reviewOpen={reviewOpen}
+          onReview={() => setReviewOpen((current) => !current)}
+        >
+          <SlideFrame key={`${slide.id}-${slide.track ?? 0}`} book={book} view={view} id={slide.id} track={slide.track ?? 0} options={options} />
         </PresentDeck>
       ) : null}
     </div>
@@ -279,27 +412,130 @@ function PresentDeck({
   children,
   index,
   count,
+  title,
+  saving,
+  comparing,
+  origin,
+  sameOrigin,
+  originalUrl,
+  originalReady,
   onClose,
+  onPick,
+  onDownload,
+  onCompare,
+  grade,
+  summary,
+  marks,
+  reviewOpen,
+  onReview,
 }: {
   children: ReactNode;
   index: number;
   count: number;
+  title: string;
+  saving: boolean;
+  comparing: boolean;
+  origin: number;
+  sameOrigin: boolean;
+  originalUrl: string;
+  originalReady: boolean;
   onClose: () => void;
+  onPick: (index: number) => void;
+  onDownload: () => void;
+  onCompare: () => void;
+  grade: string;
+  summary: string;
+  marks: GradeMark[];
+  reviewOpen: boolean;
+  onReview: () => void;
 }) {
   const [scale, setScale] = useState(1);
   useEffect(() => {
-    const measure = () => setScale(Math.max(0.2, Math.min(window.innerWidth / W, window.innerHeight / H)));
+    const measure = () => {
+      if (!comparing) {
+        setScale(Math.max(0.2, Math.min(window.innerWidth / W, (window.innerHeight - 76) / H)));
+        return;
+      }
+      const width = (window.innerWidth - 64 - 36) / (W * 2);
+      const height = (window.innerHeight - 76 - 52) / H;
+      setScale(Math.max(0.05, Math.min(width, height)));
+    };
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, []);
+  }, [comparing]);
+  const frame = (node: ReactNode) => (
+    <div className="present-frame" style={{ width: W * scale, height: H * scale }}>
+      <div className="fit-inner" style={{ transform: `scale(${scale})` }}>{node}</div>
+    </div>
+  );
+  const yours = !origin ? "" : sameOrigin ? "Same slide in your file" : `Slide ${origin} in your file`;
   return (
-    <div className="present" role="dialog" aria-modal="true" aria-label="Presentation">
-      <div className="present-frame" style={{ width: W * scale, height: H * scale }}>
-        <div className="fit-inner" style={{ transform: `scale(${scale})` }}>{children}</div>
-      </div>
-      <p className="present-count">{index + 1} / {count}</p>
-      <button type="button" className="present-exit" onClick={onClose}>Close</button>
+    <div className={comparing ? "present is-comparing" : "present"} role="dialog" aria-modal="true" aria-label={comparing ? "Comparison" : "Presentation"} data-origin={origin || undefined}>
+      {comparing ? (
+        <div className="compare-stage">
+          <div className="compare-col">
+            <p className="compare-kicker">Your slide<small>{yours}</small></p>
+            {frame(
+              <article className="slide compare-source">
+                {originalUrl ? (
+                  <img src={originalUrl} alt="" />
+                ) : (
+                  <p>{originalReady ? "Your slide could not be opened." : "Opening your slide"}</p>
+                )}
+              </article>,
+            )}
+          </div>
+          <div className="compare-col">
+            <p className="compare-kicker is-studio">Studio<small>{`Slide ${index + 1} of ${count}`}</small></p>
+            {frame(children)}
+          </div>
+        </div>
+      ) : frame(children)}
+      <footer className="present-bar">
+        <p>{title}</p>
+        <div className="present-dots" role="tablist" aria-label="Slides">
+          {Array.from({ length: count }, (_, item) => (
+            <button
+              key={item}
+              type="button"
+              role="tab"
+              aria-label={`Slide ${item + 1}`}
+              aria-selected={item === index}
+              onClick={() => onPick(item)}
+            />
+          ))}
+        </div>
+        {reviewOpen ? (
+          <aside className="review-sheet" aria-label="Grade">
+            <p className="review-grade">{grade}</p>
+            <p>{summary}</p>
+            {marks.length > 0 ? (
+              <ul>
+                {marks.map((mark) => (
+                  <li key={mark.index}>
+                    <button type="button" onClick={() => onPick(mark.index - 1)}>
+                      <b>{`Slide ${mark.index}`}</b>
+                      <strong>{mark.title}</strong>
+                      <small>{mark.note}</small>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="review-clear">Nothing to change.</p>
+            )}
+          </aside>
+        ) : null}
+        <div className="present-actions">
+          <button type="button" className={grade === "A" || grade === "B" ? "is-grade" : "is-grade is-low"} aria-pressed={reviewOpen} aria-label={`Grade ${grade}`} onClick={onReview}>{grade}</button>
+          <button type="button" aria-pressed={comparing} onClick={onCompare}>Compare</button>
+          <button type="button" onClick={onClose}>Edit</button>
+          <button type="button" className="is-download" onClick={onDownload} disabled={saving}>
+            {saving ? "Saving" : "Download"}
+          </button>
+        </div>
+      </footer>
     </div>
   );
 }

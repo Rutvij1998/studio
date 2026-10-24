@@ -776,7 +776,7 @@ function runningFooter(slides: SourceSlide[]): string {
     }
     for (const line of lines) {
       const key = normLine(line);
-      if (key.length < 28 || key.length > 180 || seen.has(key)) continue;
+      if (key.length < 12 || key.length > 180 || seen.has(key)) continue;
       seen.add(key);
       counts.set(key, (counts.get(key) ?? 0) + 1);
     }
@@ -1269,6 +1269,77 @@ export function heroAside(pieces: SlidePiece[]): { stat: CardPiece; rest: SlideP
   return { stat: first, rest };
 }
 
+export type Composition = "poster" | "proof" | "versus" | "hero" | "path" | "metrics" | "stack";
+
+/** A sentence and the one card that proves it. */
+export function proofSplit(pieces: SlidePiece[]): { text: string; card: CardPiece } | null {
+  const bands = pieceBands(pieces);
+  const lead = bands[0];
+  const cards = bands[1];
+  if (bands.length !== 2 || lead?.kind !== "prose" || cards?.kind !== "cards" || cards.items.length !== 1) return null;
+  if (lead.text.includes("\n") || lead.text.length > 200) return null;
+  const card = cards.items[0];
+  if (!card || (!card.display && !card.detail.trim())) return null;
+  return { text: lead.text, card };
+}
+
+/**
+ * The layout follows the shape already in the slide.
+ * A comparison, a hero figure, a timed path, a lone sentence, a sentence plus one card, or a row of figures.
+ * Everything else stays a stack.
+ */
+export function compositionOf(pieces: SlidePiece[], title = ""): Composition {
+  if (!pieces.length) return "stack";
+  if (compareSplit(pieces)) return "versus";
+  if (heroAside(pieces)) return "hero";
+  const bands = pieceBands(pieces);
+  const structured = bands.filter((band) => band.kind !== "prose");
+  const only = structured[0];
+  if (
+    structured.length === 1 &&
+    only?.kind === "lists" &&
+    only.items.filter((item) => isTimeTitle(item.title)).length >= 2
+  ) return "path";
+  const lone = pieces[0];
+  if (!title.trim() && pieces.length === 1 && lone?.kind === "prose" && lone.text.trim().length > 0 && lone.text.length <= 420) return "poster";
+  if (proofSplit(pieces)) return "proof";
+  if (bands.some((band) => band.kind === "cards" && band.tone === "stat" && band.items.length >= 2 && band.items.length <= 4)) return "metrics";
+  return "stack";
+}
+
+/** Display size for a sentence that is the slide. Shorter copy gets larger type. */
+export function posterPx(text: string): number {
+  const length = text.trim().length;
+  if (length <= 90) return 64;
+  if (length <= 150) return 52;
+  if (length <= 240) return 44;
+  return 36;
+}
+
+/** The same scale, capped, when the sentence sits beside one card. */
+export function proofPx(text: string): number {
+  return Math.min(40, posterPx(text));
+}
+
+/** A card grid may grow into leftover room. Open figures and sentences keep their own height. */
+export function fillBandIndex(bands: PieceBand[]): number {
+  for (let index = bands.length - 1; index >= 0; index -= 1) {
+    const band = bands[index];
+    if (!band) continue;
+    const callout = index === bands.length - 1 && index > 0 && band.kind === "prose" && band.text.length <= 240;
+    const hollow = band.kind === "cards" && band.items.length === 1 && !band.items[0]?.display && !band.items[0]?.detail.trim();
+    if (callout || band.kind !== "cards" || band.tone === "stat" || hollow) continue;
+    return index;
+  }
+  return -1;
+}
+
+/** True when the chosen type still leaves enough room to let the main grid grow. */
+export function pieceAir(slide: Pick<SourceSlide, "pieces" | "title" | "context"> & { eyebrow?: string }): boolean {
+  const options = { title: slide.title, continued: isContinued(slide as SourceSlide), eyebrow: Boolean(slide.eyebrow) };
+  return occupy(slide.pieces ?? [], pieceFit(slide), options) <= FIT_LIMIT - 72;
+}
+
 /** Pixel height of a card slide at one type step, including the title and padding. */
 function stackHeight(pieces: SlidePiece[], type: PieceType): number {
   const bands = pieceBands(pieces);
@@ -1558,6 +1629,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     markedPicture.push(/<p:pic\b/.test(xml));
     slides.push({
       index: slides.length + 1,
+      from: slides.length + 1,
       title: title.slice(0, 140),
       context,
       numbers: [],
@@ -1763,6 +1835,7 @@ function titlePass(slides: SourceSlide[]): SourceSlide[] {
   const title = first.title.trim() || "Untitled";
   const opening: SourceSlide = {
     index: 1,
+    from: first.from ?? 1,
     title,
     context: presenter,
     numbers: [],

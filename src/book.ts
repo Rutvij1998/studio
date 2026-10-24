@@ -139,6 +139,8 @@ export type SourceImage = {
 export type SourceSlide = {
   /** 1-based position in the file. */
   index: number;
+  /** 1-based slide in the uploaded file. Stays put when one slide becomes two. */
+  from?: number;
   title: string;
   /** A short section label above the title, such as DIAGNOSIS. Empty when the title already says it. */
   eyebrow?: string;

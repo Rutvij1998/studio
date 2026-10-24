@@ -1,6 +1,10 @@
+import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import type { Connect, Plugin, PreviewServer, ViteDevServer } from "vite";
 
 const LOGO_DIR = "/Users/rutvij/producthub-platform/hub/frontend/public/product-hub/partners/logos";
@@ -40,7 +44,7 @@ function send(res: ServerResponse, status: number, body: unknown) {
   res.end(payload);
 }
 
-async function readBody(req: IncomingMessage, limit: number): Promise<string> {
+async function readRaw(req: IncomingMessage, limit: number): Promise<Buffer> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -49,7 +53,81 @@ async function readBody(req: IncomingMessage, limit: number): Promise<string> {
     if (size > limit) throw new Error("large");
     chunks.push(buffer);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
+}
+
+async function readBody(req: IncomingMessage, limit: number): Promise<string> {
+  return (await readRaw(req, limit)).toString("utf8");
+}
+
+function runProcess(command: string, args: string[], cwd: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, stdio: ["ignore", "ignore", "pipe"] });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("slow"));
+    }, 50000);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve();
+      else reject(new Error("convert"));
+    });
+  });
+}
+
+let rasterChain: Promise<void> = Promise.resolve();
+
+/** Draw each slide of the uploaded file. Local only. The pages stay in file order. */
+async function rasterSlides(bytes: Buffer): Promise<string[]> {
+  const run = rasterChain.then(() => drawSlides(bytes));
+  rasterChain = run.then(() => undefined, () => undefined);
+  return run;
+}
+
+async function drawSlides(bytes: Buffer): Promise<string[]> {
+  const dir = await mkdtemp(path.join(tmpdir(), "studio-original-"));
+  try {
+    const pptx = path.join(dir, "deck.pptx");
+    const pages = path.join(dir, "pages");
+    await mkdir(pages);
+    await mkdir(path.join(dir, "profile"));
+    await writeFile(pptx, bytes);
+    const soffice = existsSync("/opt/homebrew/bin/soffice") ? "/opt/homebrew/bin/soffice" : "soffice";
+    const profile = pathToFileURL(path.join(dir, "profile")).href;
+    await runProcess(soffice, [
+      "--headless",
+      "--norestore",
+      "--nolockcheck",
+      `-env:UserInstallation=${profile}`,
+      "--convert-to",
+      "pdf",
+      "--outdir",
+      dir,
+      pptx,
+    ], dir);
+    const pdfName = (await readdir(dir)).find((name) => name.toLowerCase().endsWith(".pdf"));
+    if (!pdfName) return [];
+    await runProcess("python3", ["-c", [
+      "import fitz, sys",
+      "doc = fitz.open(sys.argv[1])",
+      "for index, page in enumerate(doc):",
+      "    zoom = 1600 / max(page.rect.width, 1)",
+      "    page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), alpha=False).save(f'{sys.argv[2]}/{index + 1:02d}.png')",
+    ].join("\n"), path.join(dir, pdfName), pages], dir);
+    const names = (await readdir(pages)).filter((name) => name.endsWith(".png")).sort();
+    const slides: string[] = [];
+    for (const name of names.slice(0, 80)) {
+      const png = await readFile(path.join(pages, name));
+      slides.push(`data:image/png;base64,${png.toString("base64")}`);
+    }
+    return slides;
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 }
 
 async function grok(input: unknown): Promise<unknown> {
@@ -163,6 +241,51 @@ async function seeFor(loader: Loader, slides: { index: number; mime: string; bas
   return reads;
 }
 
+type GradeRow = { index: number; title: string; text: string; problem: string };
+
+async function gradeFor(loader: Loader, rows: GradeRow[]): Promise<{ summary: string; notes: { index: number; note: string }[] }> {
+  const critic = await loader.ssrLoadModule("/src/critic.ts");
+  const shape = await loader.ssrLoadModule("/src/shape.ts");
+  const guide = String(critic.GRADE_GUIDE ?? "");
+  const acceptNote = critic.acceptNote as (source: string, note: string) => string | null;
+  const textFromResponse = shape.textFromResponse as (body: unknown) => string;
+  const packed = rows.slice(0, 40).map((row) => ({
+    index: row.index,
+    title: row.title.slice(0, 90),
+    text: row.text.slice(0, 280),
+    problem: row.problem.slice(0, 180),
+  }));
+  try {
+    const body = await grok([
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `${guide}\n\nSlides:\n${JSON.stringify(packed)}` }],
+      },
+    ]);
+    const raw = textFromResponse(body);
+    const start = raw.indexOf("{");
+    const end = raw.lastIndexOf("}");
+    if (start < 0 || end <= start) return { summary: "", notes: [] };
+    const parsed = JSON.parse(raw.slice(start, end + 1)) as { summary?: unknown; slides?: unknown };
+    const source = packed.map((row) => `${row.title} ${row.text}`).join("\n");
+    const summary = typeof parsed.summary === "string" ? acceptNote(source, parsed.summary) ?? "" : "";
+    const notes: { index: number; note: string }[] = [];
+    const slides = Array.isArray(parsed.slides) ? parsed.slides : [];
+    for (const item of slides) {
+      if (!item || typeof item !== "object" || notes.length >= 8) continue;
+      const row = item as { index?: unknown; note?: unknown };
+      if (typeof row.index !== "number" || typeof row.note !== "string") continue;
+      const known = packed.find((slide) => slide.index === row.index);
+      if (!known) continue;
+      const note = acceptNote(`${known.title} ${known.text}`, row.note);
+      if (note) notes.push({ index: known.index, note });
+    }
+    return { summary, notes };
+  } catch {
+    return { summary: "", notes: [] };
+  }
+}
+
 function attach(server: Loader) {
   server.middlewares.use(async (req, res, next) => {
     const url = req.url?.split("?")[0] ?? "";
@@ -183,6 +306,35 @@ function attach(server: Loader) {
           return;
         }
         send(res, 200, await shapeFor(server, text));
+        return;
+      }
+      if (req.method === "POST" && url === "/api/original") {
+        const bytes = await readRaw(req, 40_000_000);
+        if (bytes.length < 64) {
+          send(res, 200, { slides: [] });
+          return;
+        }
+        send(res, 200, { slides: await rasterSlides(bytes) });
+        return;
+      }
+      if (req.method === "POST" && url === "/api/grade") {
+        const body = JSON.parse(await readBody(req, 200_000)) as { slides?: unknown };
+        const rows = Array.isArray(body.slides) ? body.slides.flatMap((item) => {
+          if (!item || typeof item !== "object") return [];
+          const row = item as { index?: unknown; title?: unknown; text?: unknown; problem?: unknown };
+          if (typeof row.index !== "number") return [];
+          return [{
+            index: row.index,
+            title: typeof row.title === "string" ? row.title : "",
+            text: typeof row.text === "string" ? row.text : "",
+            problem: typeof row.problem === "string" ? row.problem : "",
+          }];
+        }) : [];
+        if (!envValue("XAI_API_KEY")) {
+          send(res, 200, { summary: "", notes: [] });
+          return;
+        }
+        send(res, 200, await gradeFor(server, rows));
         return;
       }
       if (req.method === "POST" && url === "/api/see") {

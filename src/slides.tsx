@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactElement } from "react";
+import { type CSSProperties, type ReactElement, useEffect, useState } from "react";
 import { coverCopy } from "./brief";
 import type { ListeningChart, MixChart, TypeSize } from "./options";
 import {
@@ -19,7 +19,7 @@ import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, i
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesChartsSource, seriesProgressList, trackNote, trackTotals } from "./reading";
 import { coverWave } from "./dotWave";
-import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, chartSentence, compareSplit, copyBlocks, figureBody, formLabel, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceBands, pieceFit, plotMode, presentKind, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, chartSentence, compareSplit, compositionOf, copyBlocks, figureBody, fillBandIndex, formLabel, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, plotMode, posterPx, presentKind, proofPx, proofSplit, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
 import type { SheetGrid, SlidePiece, SourceChart, SourceSlide, SourceTable } from "./book";
 
 export type SlideId =
@@ -45,7 +45,7 @@ export type SlideId =
   | "card"
   | "read";
 
-export type SlideMeta = { id: SlideId; label: string; form: string; track?: number };
+export type SlideMeta = { id: SlideId; label: string; form: string; track?: number; origin?: number };
 
 function clipLabel(text: string): string {
   const clean = text.trim();
@@ -82,6 +82,7 @@ export function slidesFor(book: Book): SlideMeta[] {
       label: railLabel(slide),
       form: formLabel(slide),
       track: slide.index,
+      origin: slide.from,
     }));
     return origin;
   }
@@ -231,10 +232,69 @@ function CoverWave() {
   return (
     <svg className="cover-wave" viewBox="0 0 1280 720" aria-hidden="true">
       {COVER_DOTS.map((dot, index) => (
-        <circle key={index} cx={dot.x * 1280} cy={dot.y * 720} r={dot.r * 1280} fill={`#${dot.fill}`} opacity={dot.opacity} />
+        <circle
+          key={index}
+          cx={dot.x * 1280}
+          cy={dot.y * 720}
+          r={dot.r * 1280}
+          fill={`#${dot.fill}`}
+          opacity={dot.opacity}
+          style={{ animationDelay: `${(dot.x * 0.7 + dot.y * 0.18).toFixed(3)}s` }}
+        />
       ))}
     </svg>
   );
+}
+
+function figureParts(value: string): { prefix: string; digits: string; suffix: string } | null {
+  const match = value.match(/^(\D{0,3})(\d[\d,]*)(\D{0,3})$/);
+  if (!match?.[2]) return null;
+  return { prefix: match[1] ?? "", digits: match[2], suffix: match[3] ?? "" };
+}
+
+function figureStart(value: string): string {
+  const parts = figureParts(value);
+  if (!parts) return value;
+  return `${parts.prefix}0${parts.suffix}`;
+}
+
+/** Counts a figure that is already on the slide. The last frame is the source text. */
+function Figure({ value }: { value: string }) {
+  const reduce = typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const [shown, setShown] = useState(reduce ? value : figureStart(value));
+  useEffect(() => {
+    if (reduce) {
+      setShown(value);
+      return;
+    }
+    const parts = figureParts(value);
+    if (!parts) {
+      setShown(value);
+      return;
+    }
+    const target = Number(parts.digits.replace(/,/g, ""));
+    if (!Number.isFinite(target)) {
+      setShown(value);
+      return;
+    }
+    const commas = parts.digits.includes(",");
+    const start = performance.now();
+    let frame = 0;
+    const tick = (now: number) => {
+      const t = Math.min(1, (now - start) / 720);
+      if (t >= 1) {
+        setShown(value);
+        return;
+      }
+      const current = Math.round(target * (1 - (1 - t) ** 3));
+      const text = commas ? current.toLocaleString("en-US") : String(current);
+      setShown(`${parts.prefix}${text}${parts.suffix}`);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [reduce, value]);
+  return <span className="figure" aria-hidden="true">{shown}</span>;
 }
 
 function CoverTitle({ title }: { title: string }) {
@@ -1025,7 +1085,7 @@ function ScoreChart({ chart, table }: { chart: SourceChart; table: SourceTable |
   return (
     <div className="score-board">
       <div className="score-hero">
-        <b>{cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)}</b>
+        <b aria-label={cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)}><Figure value={cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)} /></b>
         <span>{cats[lead]}</span>
         <i><em style={{ width: `${((Math.max(0, values[lead] ?? 0)) / max) * 100}%` }} /></i>
       </div>
@@ -1033,7 +1093,7 @@ function ScoreChart({ chart, table }: { chart: SourceChart; table: SourceTable |
         <div className={`score-rest rest-${rest.length}`}>
           {rest.map((index) => (
             <div className="score-tile" key={`${cats[index]}-${index}`}>
-              <b>{cellText(table, cats[index] ?? "", series, values[index] ?? 0)}</b>
+              <b aria-label={cellText(table, cats[index] ?? "", series, values[index] ?? 0)}><Figure value={cellText(table, cats[index] ?? "", series, values[index] ?? 0)} /></b>
               <span>{cats[index]}</span>
               <i><em style={{ width: `${((Math.max(0, values[index] ?? 0)) / max) * 100}%` }} /></i>
             </div>
@@ -1056,7 +1116,7 @@ function RankChart({ chart, table }: { chart: SourceChart; table: SourceTable | 
         <li key={`${cat}-${index}`}>
           <span>{cat}</span>
           <i><em style={{ width: `${(Math.max(0, values[index] ?? 0) / max) * 100}%` }} /></i>
-          <b>{cellText(table, cat, series, values[index] ?? 0)}</b>
+          <b aria-label={cellText(table, cat, series, values[index] ?? 0)}><Figure value={cellText(table, cat, series, values[index] ?? 0)} /></b>
         </li>
       ))}
     </ol>
@@ -1741,11 +1801,17 @@ function OriginProse({ slide }: { slide: SourceSlide }) {
   );
 }
 
-function PieceStack({ pieces }: { pieces: SlidePiece[] }) {
+function PieceStack({ pieces, stretch }: { pieces: SlidePiece[]; stretch?: "cards" | "lists" }) {
   const bands = pieceBands(pieces);
+  const fillAt = stretch === "lists"
+    ? bands.findIndex((band) => band.kind === "lists")
+    : stretch === "cards"
+      ? fillBandIndex(bands)
+      : -1;
   return (
     <>
       {bands.map((band, index) => {
+        const fill = index === fillAt;
         if (band.kind === "prose") {
           const callout = index === bands.length - 1 && index > 0 && band.text.length <= 240;
           return (
@@ -1757,7 +1823,7 @@ function PieceStack({ pieces }: { pieces: SlidePiece[] }) {
         if (band.kind === "lists") {
           const timed = band.items.filter((item) => isTimeTitle(item.title)).length >= 2;
           return (
-            <div className={`piece-columns cols-${band.items.length}${timed ? " is-time" : ""}`} key={index}>
+            <div className={`piece-columns cols-${band.items.length}${timed ? " is-time" : ""}${fill ? " is-fill" : ""}`} key={index}>
               {band.items.map((item, itemIndex) => (
                 <section key={`${item.title}-${itemIndex}`}>
                   {timed ? <p className="step-index">{String(itemIndex + 1).padStart(2, "0")}</p> : null}
@@ -1774,10 +1840,10 @@ function PieceStack({ pieces }: { pieces: SlidePiece[] }) {
         }
         const across = gridAcross(band.tone, band.items.length);
         return (
-          <div className={`piece-grid is-${band.tone}`} data-across={across} key={index}>
+          <div className={`piece-grid is-${band.tone}${fill ? " is-fill" : ""}`} data-across={across} key={index}>
             {band.items.map((item, itemIndex) => (
               <article key={`${item.title}-${itemIndex}`} data-face={cardFace(item.title) || undefined}>
-                {item.display ? <b>{item.display}</b> : null}
+                {item.display ? <b aria-label={item.display}><Figure value={item.display} /></b> : null}
                 <strong>{item.display ? item.label || item.title : item.title}</strong>
                 {item.detail ? <span>{item.detail}</span> : null}
               </article>
@@ -1786,6 +1852,15 @@ function PieceStack({ pieces }: { pieces: SlidePiece[] }) {
         );
       })}
     </>
+  );
+}
+
+function PosterLine({ text, proof }: { text: string; proof?: boolean }) {
+  const size = proof ? proofPx(text) : posterPx(text);
+  return (
+    <div className={`piece-poster${proof ? "" : " is-fill"}`} style={{ "--poster": `${size}px` } as CSSProperties}>
+      <CopyBlocks text={text} tone="figure" />
+    </div>
   );
 }
 
@@ -1822,33 +1897,51 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
 function OriginPieces({ slide }: { slide: SourceSlide }) {
   const continued = isContinued(slide);
   const pieces = slide.pieces ?? [];
-  const compare = compareSplit(pieces);
-  const aside = compare ? null : heroAside(pieces);
+  const composition = compositionOf(pieces, slide.title);
+  const compare = composition === "versus" ? compareSplit(pieces) : null;
+  const aside = composition === "hero" ? heroAside(pieces) : null;
+  const proof = composition === "proof" ? proofSplit(pieces) : null;
+  const poster = composition === "poster" && pieces[0]?.kind === "prose" ? pieces[0].text : "";
+  const air = pieceAir(slide) && slide.images.length === 0;
+  const stretch = !air ? undefined : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" ? "cards" : undefined;
   return (
-    <article className="slide piece-slide" data-fit={pieceFit(slide)}>
+    <article className={`slide piece-slide is-${composition}${air ? " is-air" : ""}`} data-fit={pieceFit(slide)} data-composition={composition}>
       {continued ? <p className="kicker">Continued</p> : null}
       {slide.eyebrow ? <p className="eyebrow">{slide.eyebrow}</p> : null}
       {slide.title.trim() ? <h2>{slide.title.trim()}</h2> : null}
-      {compare ? (
-        <>
-          {compare.before.length ? <PieceStack pieces={compare.before} /> : null}
-          <div className="piece-split">
-            <div><PieceStack pieces={compare.left} /></div>
-            <div><PieceStack pieces={compare.right} /></div>
+      <div className={air || poster || proof || aside ? "piece-body is-stretch" : "piece-body"}>
+        {poster ? <PosterLine text={poster} /> : null}
+        {proof ? (
+          <div className="piece-proof is-fill">
+            <PosterLine text={proof.text} proof />
+            <article data-face={cardFace(proof.card.title) || undefined}>
+              {proof.card.display ? <b aria-label={proof.card.display}><Figure value={proof.card.display} /></b> : null}
+              <strong>{proof.card.display ? proof.card.label || proof.card.title : proof.card.title}</strong>
+              {proof.card.detail ? <span>{proof.card.detail}</span> : null}
+            </article>
           </div>
-        </>
-      ) : aside ? (
-        <div className="piece-aside">
-          <article>
-            <b>{aside.stat.display}</b>
-            <strong>{aside.stat.label || aside.stat.title}</strong>
-            {aside.stat.detail ? <span>{aside.stat.detail}</span> : null}
-          </article>
-          <div><PieceStack pieces={aside.rest} /></div>
-        </div>
-      ) : (
-        <PieceStack pieces={pieces} />
-      )}
+        ) : null}
+        {compare ? (
+          <>
+            {compare.before.length ? <PieceStack pieces={compare.before} /> : null}
+            <div className={`piece-split is-versus${air ? " is-fill" : ""}`}>
+              <div><PieceStack pieces={compare.left} /></div>
+              <div><PieceStack pieces={compare.right} /></div>
+            </div>
+          </>
+        ) : null}
+        {aside ? (
+          <div className="piece-aside is-fill">
+            <article>
+              <b aria-label={aside.stat.display}><Figure value={aside.stat.display} /></b>
+              <strong>{aside.stat.label || aside.stat.title}</strong>
+              {aside.stat.detail ? <span>{aside.stat.detail}</span> : null}
+            </article>
+            <div><PieceStack pieces={aside.rest} /></div>
+          </div>
+        ) : null}
+        {!poster && !proof && !compare && !aside ? <PieceStack pieces={pieces} stretch={stretch} /> : null}
+      </div>
       {slide.images.length ? (
         <div className="picture-stage">
           <KeptImages images={slide.images} label={slide.title.trim() || "Picture"} stage />
