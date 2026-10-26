@@ -1,4 +1,4 @@
-import { compositionOf, pieceAir, type Composition } from "./sourceDeck";
+import { directedComposition, pieceAir, type Composition } from "./sourceDeck";
 import type { SourceSlide, SlidePiece } from "./book";
 
 export type GradeLetter = "A" | "B" | "C" | "D";
@@ -45,8 +45,9 @@ function excerpt(slide: SourceSlide): string {
   return text.slice(0, 280);
 }
 
-/** A sentence beside a title-only card is the empty plate in the screenshot. */
+/** A sentence beside a title-only card is the empty plate. Real lists keep the slide full. */
 function blankPlate(pieces: SlidePiece[]): boolean {
+  if (pieces.length !== 2) return false;
   const cards = pieces.filter((piece) => piece.kind === "card");
   const prose = pieces.filter((piece) => piece.kind === "prose");
   if (cards.length !== 1 || prose.length !== 1) return false;
@@ -108,7 +109,7 @@ export function gradeBrief(slides: SourceSlide[]): { grade: DeckGrade; brief: Gr
   const brief = slides.map((slide) => ({
     index: slide.index,
     title: slide.title.replace(/\s+/g, " ").trim().slice(0, 90),
-    composition: compositionOf(slide.pieces ?? [], slide.title),
+    composition: directedComposition(slide),
     text: excerpt(slide),
     problem: grade.slides.find((mark) => mark.index === slide.index)?.note ?? "",
   }));

@@ -10,7 +10,7 @@ import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, i
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesProgressList, trackNote, trackTotals } from "./reading";
 import { coverWave } from "./dotWave";
-import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, compareSplit, compositionOf, copyBlocks, figureBody, fillBandIndex, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, pieceFrame, plotMode, posterPx, proofPx, proofSplit, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers, type PieceBand } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, compareSplit, directedComposition, copyBlocks, displayPx, figureBody, figurePx, figureShare, fillBandIndex, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, pieceFrame, plotMode, posterPx, proofPx, proofSplit, rowDisplay, sameFigure, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers, type PieceBand } from "./sourceDeck";
 
 const INK = "14003B";
 const BRAND = "3200BE";
@@ -2111,7 +2111,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
   const width = 12.17;
   const floor = 7.5 - 36 / 96;
   const pieces = source.pieces ?? [];
-  const composition = compositionOf(pieces, source.title);
+  const composition = directedComposition(source);
   const air = pieceAir(source) && source.images.length === 0;
   let cursor = frame.inch(40);
   if (isContinued(source)) {
@@ -2294,7 +2294,48 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
         topCursor += height + frame.inch(16);
         continue;
       }
+      if (band.kind === "cards" && composition === "cascade" && band.tone === "stat" && !narrow && band.items[0]) {
+        const items = band.items;
+        const displays = items.map((item) => item.display);
+        const ceiling = air ? (items.length > 2 ? 96 : 128) : size.stat;
+        const sizes = items.map((item) => figurePx(item.display, displays, ceiling));
+        const maxPx = Math.max(...sizes);
+        const labelH = frame.inch(Math.ceil(size.statLabel * 1.3));
+        const detailH = frame.inch(Math.ceil(size.statBody * 1.4) + 8);
+        const tallestDetail = Math.max(...items.map((item) => (item.detail.trim() ? detailH : 0)));
+        const bar = sameFigure(displays);
+        const rowH = frame.inch(maxPx) + labelH + tallestDetail + (bar ? 0.28 : 0);
+        const gap = 0.28;
+        const colW = (box - gap * (items.length - 1)) / items.length;
+        items.forEach((item, index) => {
+          const px = sizes[index] ?? ceiling;
+          const x = xStart + index * (colW + gap);
+          slide.addText(item.display, {
+            x, y: topCursor + frame.inch(maxPx - px), w: colW, h: frame.inch(px),
+            fontFace: "Calibri", fontSize: frame.pt(px), bold: true, color: INK, margin: 0, valign: "bottom",
+          });
+          let top = topCursor + frame.inch(maxPx);
+          slide.addText(item.label || item.title, {
+            x, y: top, w: colW, h: labelH,
+            fontFace: "Calibri", fontSize: frame.pt(size.statLabel), bold: true, color: INK, margin: 0, valign: "top",
+          });
+          top += labelH;
+          if (item.detail.trim()) {
+            slide.addText(item.detail, {
+              x, y: top + 0.04, w: colW, h: detailH,
+              fontFace: "Calibri", fontSize: frame.pt(size.statBody), color: "322C49", margin: 0, valign: "top",
+            });
+          }
+          if (bar) {
+            drawTrack(pres, slide, x, topCursor + rowH - 0.1, colW, 0.08, "3200BE", figureShare(item.display, displays));
+          }
+        });
+        topCursor += rowH + frame.inch(16);
+        continue;
+      }
       const cards = band.items;
+      const displays = band.tone === "stat" ? cards.map((item) => item.display) : [];
+      const bareShare = sameFigure(displays) && cards.every((item) => item.display && !item.detail.trim());
       const across = narrow ? 1 : gridAcross(band.tone, cards.length);
       const gap = frame.inch(14);
       const bonus = bandIndex === fillAt ? extra / Math.max(1, Math.ceil(cards.length / across)) : 0;
@@ -2304,13 +2345,28 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
         const heights = slice.map((item) => frame.cardHeight(item, narrow ? 2 : slice.length));
         const naturalH = frame.inch(Math.max(...heights));
         const rowH = naturalH + bonus;
+        const plainStats = composition === "metrics" && band.tone === "stat" && slice.every((item) => !cardFace(item.title));
+        if (plainStats) {
+          slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+            x: xStart, y: topCursor, w: box, h: rowH,
+            fill: { color: STAGE },
+            rectRadius: 0.22,
+            line: { color: STAGE, width: 0 },
+          });
+          slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+            x: xStart + 0.18, y: topCursor + 0.1, w: Math.max(0.4, box - 0.36), h: 0.045,
+            fill: { color: "C23FC2" },
+            rectRadius: 0.02,
+            line: { color: "C23FC2", width: 0 },
+          });
+        }
         slice.forEach((item, index) => {
           const x = xStart + index * (cardW + gap);
           const face = cardFace(item.title);
           const faceFill = face === "green" ? "E7F6EF" : face === "amber" ? "FFF4D6" : face === "red" ? "F8E8EE" : face === "ink" ? STAGE : WHITE;
           const faceInk = face === "green" ? "0E6B45" : face === "amber" ? "8A5A00" : face === "red" ? "8E2348" : face === "ink" ? "F4F1FA" : INK;
           const faceBody = face === "ink" ? "D9D3E8" : face ? faceInk : "322C49";
-          const openStat = composition === "metrics" && band.tone === "stat" && !face;
+          const openStat = plainStats || (composition === "metrics" && band.tone === "stat" && !face);
           if (!openStat) {
             slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
               x, y: topCursor, w: cardW, h: rowH,
@@ -2327,20 +2383,23 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
             const displayH = frame.inch(size.stat);
             slide.addText(item.display, {
               x: x + inset, y: top, w: cardW - inset * 2, h: displayH,
-              fontFace: "Calibri", fontSize: frame.pt(size.stat), bold: true, color: faceInk, margin: 0, valign: "top",
+              fontFace: "Calibri", fontSize: frame.pt(size.stat), bold: true, color: openStat ? WHITE : faceInk, margin: 0, valign: "top",
             });
             top += displayH;
             const labelH = frame.inch(Math.ceil(size.statLabel * 1.3));
             slide.addText(item.label || item.title, {
               x: x + inset, y: top, w: cardW - inset * 2, h: labelH,
-              fontFace: "Calibri", fontSize: frame.pt(size.statLabel), bold: true, color: faceInk, margin: 0, valign: "top",
+              fontFace: "Calibri", fontSize: frame.pt(size.statLabel), bold: true, color: openStat ? WHITE : faceInk, margin: 0, valign: "top",
             });
             top += labelH + 0.04;
             if (item.detail) {
               slide.addText(item.detail, {
                 x: x + inset, y: top, w: cardW - inset * 2, h: Math.max(0.24, boxBottom - top - 0.1),
-                fontFace: "Calibri", fontSize: frame.pt(size.statBody), color: faceBody, margin: 0, valign: "top",
+                fontFace: "Calibri", fontSize: frame.pt(size.statBody), color: openStat ? "D9D3E8" : faceBody, margin: 0, valign: "top",
               });
+            }
+            if (bareShare) {
+              drawTrack(pres, slide, x + inset, topCursor + rowH - 0.14, cardW - inset * 2, 0.045, openStat ? "C23FC2" : "3200BE", figureShare(item.display, displays));
             }
             return;
           }
@@ -2434,7 +2493,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
     const colW = (width - gap) / 2;
     const leftNatural = pieceBands(compare.left).reduce((sum, band) => sum + bandInches(band, true), 0);
     const rightNatural = pieceBands(compare.right).reduce((sum, band) => sum + bandInches(band, true), 0);
-    const splitH = Math.max(leftNatural, rightNatural, air ? floor - cursor : 0, 1);
+    const splitH = Math.max(leftNatural, rightNatural, 1);
     slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
       x: x0, y: cursor, w: colW, h: splitH,
       fill: { color: "F4F1FB" },
@@ -2465,7 +2524,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
       rectRadius: CARD_RADIUS,
       line: { color: STAGE, width: 0 },
     });
-    const heroPx = air ? 120 : size.stat;
+    const heroPx = displayPx(aside.stat.display, air ? 120 : size.stat);
     const displayH = frame.inch(heroPx);
     const labelH = 0.55;
     const detailH = aside.stat.detail ? 0.7 : 0;
@@ -2488,7 +2547,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
     }
     cursor = Math.max(restEnd, cursor + statH);
   } else {
-    const grow = !air ? "none" : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" ? "cards" : "none";
+    const grow = !air ? "none" : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" || composition === "cascade" ? "cards" : "none";
     cursor = paint(pieces, x0, cursor, width, false, grow);
   }
   if (source.images.length && cursor < 6.3) placeKept(slide, source.images, x0, cursor, width, Math.max(0.8, 7.05 - cursor));
@@ -2764,45 +2823,108 @@ function drawTrack(pres: Pres, slide: Slide, x: number, y: number, w: number, h:
   });
 }
 
-function drawScore(pres: Pres, slide: Slide, chart: SourceChart, table: SourceTable | null, x: number, y: number, w: number) {
+function drawScore(pres: Pres, slide: Slide, chart: SourceChart, table: SourceTable | null, x: number, y: number, w: number, h: number) {
   const series = chart.series[0];
   if (!series) return;
-  const cats = chart.categories.slice(0, 5);
+  const cats = chart.categories.slice(0, 8);
   const values = cats.map((_, index) => series.values[index] ?? 0);
   const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
   const named = cats.findIndex((category) => /^total\b/i.test(category.trim()));
   const lead = named >= 0 ? named : values.reduce((best, value, index) => (value > (values[best] ?? 0) ? index : best), 0);
   const rest = cats.map((_, index) => index).filter((index) => index !== lead);
-  slide.addText(rowDisplay(table, cats[lead] ?? "", [series], formatPoint(values[lead] ?? 0)), {
-    x, y, w: Math.min(w, 8), h: 0.9,
-    fontFace: "Calibri", fontSize: 48, bold: true, color: INK, margin: 0,
+  const hero = rowDisplay(table, cats[lead] ?? "", [series], formatPoint(values[lead] ?? 0));
+  const wide = rest.length > 3;
+  const heroPx = displayPx(hero, wide ? 84 : 128);
+  const tones = ["3200BE", "9A2F9A", "7C8CFF", "5C6BC0", "1F9E72", "C23FC2", "5B3BE0"];
+  if (!rest.length) {
+    slide.addText((cats[lead] ?? "").toUpperCase(), {
+      x, y: y + 0.4, w, h: 0.28,
+      fontFace: "Calibri", fontSize: 12, bold: true, color: "C23FC2", margin: 0, charSpacing: 1.1,
+    });
+    slide.addText(hero, {
+      x, y: y + 0.7, w, h: heroPx / 96,
+      fontFace: "Calibri", fontSize: heroPx * 0.75, bold: true, color: INK, margin: 0,
+    });
+    drawTrack(pres, slide, x, y + 0.78 + heroPx / 96, w, 0.16, "3200BE", Math.max(0, values[lead] ?? 0) / max);
+    return;
+  }
+  if (wide) {
+    const heroH = heroPx / 96;
+    slide.addText((cats[lead] ?? "").toUpperCase(), {
+      x, y, w, h: 0.26,
+      fontFace: "Calibri", fontSize: 12, bold: true, color: "C23FC2", margin: 0, charSpacing: 1.1,
+    });
+    slide.addText(hero, {
+      x, y: y + 0.26, w, h: heroH,
+      fontFace: "Calibri", fontSize: heroPx * 0.75, bold: true, color: INK, margin: 0, valign: "top",
+    });
+    const beamY = y + 0.32 + heroH;
+    drawTrack(pres, slide, x, beamY, w * 0.72, 0.14, "3200BE", Math.max(0, values[lead] ?? 0) / max);
+    const gap = 0.12;
+    const colW = (w - gap * (rest.length - 1)) / rest.length;
+    const base = y + h - 0.58;
+    const tower = Math.max(0.8, base - (beamY + 0.55));
+    rest.forEach((index, slot) => {
+      const left = x + slot * (colW + gap);
+      const value = values[index] ?? 0;
+      const ratio = value <= 0 ? 0 : Math.max(0, value) / max;
+      const bh = ratio <= 0 ? 0 : Math.max(0.08, tower * ratio);
+      const written = rowDisplay(table, cats[index] ?? "", [series], formatPoint(value));
+      slide.addText(written, {
+        x: left, y: base - bh - 0.32, w: colW, h: 0.28,
+        fontFace: "Calibri", fontSize: displayPx(written, 22) * 0.75, bold: true, color: INK, margin: 0,
+      });
+      if (bh > 0) {
+        slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+          x: left, y: base - bh, w: colW, h: bh,
+          fill: { color: tones[slot] ?? "3200BE" },
+          rectRadius: 0.06,
+        });
+      }
+      slide.addText(cats[index] ?? "", {
+        x: left, y: base + 0.04, w: colW, h: 0.5,
+        fontFace: "Calibri", fontSize: 11, color: "322C49", margin: 0, valign: "top",
+      });
+    });
+    return;
+  }
+  const leftW = w * 0.54;
+  const base = y + Math.max(2.4, h - 0.72);
+  slide.addText((cats[lead] ?? "").toUpperCase(), {
+    x, y: base - 0.34 - heroPx / 96, w: leftW, h: 0.26,
+    fontFace: "Calibri", fontSize: 12, bold: true, color: "C23FC2", margin: 0, charSpacing: 1.1,
   });
-  slide.addText(cats[lead] ?? "", {
-    x, y: y + 0.92, w: Math.min(w, 8), h: 0.32,
-    fontFace: "Calibri", fontSize: 16, color: "322C49", margin: 0,
+  slide.addText(hero, {
+    x, y: base - 0.08 - heroPx / 96, w: leftW, h: heroPx / 96,
+    fontFace: "Calibri", fontSize: heroPx * 0.75, bold: true, color: INK, margin: 0, valign: "bottom",
   });
-  drawTrack(pres, slide, x, y + 1.32, w, 0.12, "3200BE", Math.max(0, values[lead] ?? 0) / max);
-  if (!rest.length) return;
-  const gap = 0.28;
-  const colW = (w - gap * (rest.length - 1)) / rest.length;
+  drawTrack(pres, slide, x, base - 0.02, leftW, 0.16, "3200BE", Math.max(0, values[lead] ?? 0) / max);
+  const gap = 0.16;
+  const rightX = x + leftW + 0.28;
+  const rightW = Math.max(1.2, w - leftW - 0.28);
+  const colW = Math.min(1.7, (rightW - gap * (rest.length - 1)) / rest.length);
+  const tower = Math.max(1.5, base - y - 0.55);
   rest.forEach((index, slot) => {
-    const left = x + slot * (colW + gap);
-    const top = y + 1.75;
-    slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
-      x: left, y: top - 0.08, w: colW, h: 1.22,
-      fill: { color: WHITE },
-      rectRadius: CARD_RADIUS,
-      line: { color: CARD_LINE, width: 0.75 },
+    const left = rightX + slot * (colW + gap);
+    const value = values[index] ?? 0;
+    const ratio = value <= 0 ? 0 : Math.max(0, value) / max;
+    const bh = ratio <= 0 ? 0 : Math.max(0.08, tower * ratio);
+    const written = rowDisplay(table, cats[index] ?? "", [series], formatPoint(value));
+    slide.addText(written, {
+      x: left, y: base - bh - 0.4, w: colW, h: 0.36,
+      fontFace: "Calibri", fontSize: displayPx(written, 28) * 0.75, bold: true, color: INK, margin: 0,
     });
-    slide.addText(rowDisplay(table, cats[index] ?? "", [series], formatPoint(values[index] ?? 0)), {
-      x: left + 0.16, y: top, w: colW - 0.32, h: 0.5,
-      fontFace: "Calibri", fontSize: 28, bold: true, color: INK, margin: 0,
-    });
+    if (bh > 0) {
+      slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+        x: left, y: base - bh, w: colW, h: bh,
+        fill: { color: tones[slot] ?? "3200BE" },
+        rectRadius: 0.08,
+      });
+    }
     slide.addText(cats[index] ?? "", {
-      x: left + 0.16, y: top + 0.5, w: colW - 0.32, h: 0.32,
-      fontFace: "Calibri", fontSize: 14, color: "322C49", margin: 0,
+      x: left, y: base + 0.06, w: colW, h: 0.62,
+      fontFace: "Calibri", fontSize: 11, color: "322C49", margin: 0, valign: "top",
     });
-    drawTrack(pres, slide, left + 0.16, top + 0.92, Math.max(0.4, colW - 0.48), 0.1, "3200BE", Math.max(0, values[index] ?? 0) / max);
   });
 }
 
@@ -2812,14 +2934,36 @@ function drawRank(pres: Pres, slide: Slide, chart: SourceChart, table: SourceTab
   const cats = chart.categories.slice(0, 14);
   const values = cats.map((_, index) => series.values[index] ?? 0);
   const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
-  const rowH = Math.min(0.36, h / Math.max(1, cats.length));
-  cats.forEach((cat, index) => {
-    const top = y + index * rowH;
+  const named = cats.findIndex((category) => /^total\b/i.test(category.trim()));
+  const lead = named >= 0 ? named : values.reduce((best, value, index) => (value > (values[best] ?? 0) ? index : best), 0);
+  const rest = cats.map((_, index) => index).filter((index) => index !== lead);
+  const beaconH = 1.15;
+  slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
+    x, y, w, h: beaconH,
+    fill: { color: STAGE },
+    rectRadius: 0.18,
+    line: { color: STAGE, width: 0 },
+  });
+  slide.addText(cats[lead] ?? "", {
+    x: x + 0.28, y: y + 0.22, w: w - 3.5, h: 0.72,
+    fontFace: "Calibri", fontSize: 16, bold: true, color: "FF96FF", margin: 0, valign: "middle",
+  });
+  const hero = rowDisplay(table, cats[lead] ?? "", [series], formatPoint(values[lead] ?? 0));
+  const heroPt = displayPx(hero, 72) * 0.75;
+  slide.addText(hero, {
+    x: x + w - 3.15, y: y + 0.14, w: 2.8, h: 0.88,
+    fontFace: "Calibri", fontSize: heroPt, bold: true, color: WHITE, align: "right", margin: 0, valign: "middle",
+  });
+  const rowH = Math.min(0.32, (h - beaconH - 0.14) / Math.max(1, rest.length));
+  rest.forEach((index, slot) => {
+    const top = y + beaconH + 0.14 + slot * rowH;
+    const cat = cats[index] ?? "";
     slide.addText(cat, {
       x, y: top, w: 3.15, h: rowH,
-      fontFace: "Calibri", fontSize: cats.length > 10 ? 11 : 13, color: INK, margin: 0, valign: "middle",
+      fontFace: "Calibri", fontSize: rest.length > 10 ? 11 : 13, color: INK, margin: 0, valign: "middle",
     });
-    drawTrack(pres, slide, x + 3.25, top + (rowH - 0.1) / 2, w - 4.55, 0.1, "3200BE", Math.max(0, values[index] ?? 0) / max);
+    const value = values[index] ?? 0;
+    drawTrack(pres, slide, x + 3.25, top + (rowH - 0.08) / 2, w - 4.55, 0.08, "3200BE", value <= 0 ? 0 : Math.max(0, value) / max);
     slide.addText(rowDisplay(table, cat, [series], formatPoint(values[index] ?? 0)), {
       x: x + w - 1.15, y: top, w: 1.15, h: rowH,
       fontFace: "Calibri", fontSize: 13, bold: true, color: INK, align: "right", margin: 0, valign: "middle",
@@ -2863,11 +3007,13 @@ function drawMatrix(pres: Pres, slide: Slide, chart: SourceChart, table: SourceT
     series.forEach((item, seriesIndex) => {
       const left = x + labelW + seriesIndex * colW;
       const value = item.values[index] ?? 0;
+      const peakAt = cats.reduce((best, _, valueIndex) => ((item.values[valueIndex] ?? 0) > (item.values[best] ?? 0) ? valueIndex : best), 0);
+      const peak = index === peakAt && value > 0;
       const numW = Math.min(0.85, colW * 0.34);
       drawTrack(pres, slide, left, top + (rowH - 0.08) / 2, Math.max(0.3, colW - numW - 0.16), 0.08, CHART_COLORS[seriesIndex] ?? "3200BE", Math.max(0, value) / (maxes[seriesIndex] ?? 1));
       slide.addText(rowDisplay(table, cat, [item], formatPoint(value)), {
         x: left + colW - numW - 0.08, y: top, w: numW, h: rowH,
-        fontFace: "Calibri", fontSize: 12, bold: true, color: INK, align: "right", margin: 0, valign: "middle",
+        fontFace: "Calibri", fontSize: peak ? 14 : 12, bold: true, color: peak ? BRAND : INK, align: "right", margin: 0, valign: "middle",
       });
     });
     spare.forEach((header, spareIndex) => {
@@ -2922,13 +3068,25 @@ function drawTrend(pres: Pres, slide: Slide, chart: SourceChart, x: number, y: n
         drawSegment(pres, slide, from.x, from.y, to.x, to.y, color, 2.25, 0);
       }
     }
-    points.forEach((point) => {
+    const peakAt = cats.reduce((best, _, index) => ((item.values[index] ?? 0) > (item.values[best] ?? -Infinity) ? index : best), 0);
+    points.forEach((point, index) => {
+      const peak = index === peakAt;
+      const dot = peak ? 0.11 : 0.07;
       slide.addShape(pres.shapes.OVAL, {
-        x: point.x - 0.07, y: point.y - 0.07, w: 0.14, h: 0.14,
+        x: point.x - dot, y: point.y - dot, w: dot * 2, h: dot * 2,
         fill: { color },
         line: { color: "FFFFFF", width: 1.25 },
       });
     });
+    if (series.length !== 1 || cats.length > 8) {
+      const peak = points[peakAt];
+      if (peak) {
+        slide.addText(formatPoint(item.values[peakAt] ?? 0), {
+          x: peak.x - 0.4, y: peak.y - 0.34, w: 0.8, h: 0.22,
+          fontFace: "Calibri", fontSize: 12, bold: true, color: INK, align: "center", margin: 0,
+        });
+      }
+    }
     if (series.length === 1 && cats.length <= 8) {
       points.forEach((point, index) => {
         slide.addText(formatPoint(item.values[index] ?? 0), {
@@ -2982,14 +3140,18 @@ function drawColumns(pres: Pres, slide: Slide, chart: SourceChart, table: Source
       const barW = Math.min(0.46, (groupW - 0.12) / Math.max(1, series.length));
       const barsW = series.length * barW + Math.max(0, series.length - 1) * 0.06;
       const start = groupX + (groupW - barsW) / 2;
+      const lonePeak = series.length === 1
+        ? series[0]!.values.reduce((best, value, valueIndex) => (value > (series[0]!.values[best] ?? -Infinity) ? valueIndex : best), 0)
+        : -1;
       series.forEach((item, seriesIndex) => {
         const value = Math.max(0, item.values[index] ?? 0);
         const bh = (value / max) * (plotH - 0.28);
         const bx = start + seriesIndex * (barW + 0.06);
+        const tone = series.length === 1 && index !== lonePeak ? "D9D0F5" : CHART_COLORS[seriesIndex] ?? "3200BE";
         if (bh > 0.02) {
           slide.addShape(pres.shapes.ROUNDED_RECTANGLE, {
             x: bx, y: base - bh, w: barW, h: bh,
-            fill: { color: CHART_COLORS[seriesIndex] ?? "3200BE" },
+            fill: { color: tone },
             rectRadius: 0.05,
           });
         }
@@ -3068,7 +3230,7 @@ function addOriginChart(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
   const chartTop = cursor + 0.04;
   const chartH = Math.max(1.5, 6.72 - chartTop);
   const inline = mode === "score" || mode === "rank" || mode === "matrix" || mode === "trend" || mode === "columns";
-  const limit = mode === "rank" ? 14 : mode === "trend" || mode === "funnel" ? 16 : mode === "matrix" ? 12 : mode === "score" ? 5 : 12;
+  const limit = mode === "rank" ? 14 : mode === "trend" || mode === "funnel" ? 16 : mode === "matrix" ? 12 : mode === "score" ? 8 : 12;
   const labels = chart.categories.slice(0, limit);
   const data = chart.series.slice(0, chart.kind === "donut" ? 1 : 4).map((series) => ({
     name: series.name,
@@ -3080,7 +3242,7 @@ function addOriginChart(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
   const side = source.images.length > 0 && !inline;
   const chartW = !inline && (beside || side) ? 8.05 : 12.2;
   const colors = data.length === 1 ? ["3200BE"] : [...CHART_COLORS];
-  if (mode === "score") drawScore(pres, slide, chart, table, 0.55, chartTop, chartW);
+  if (mode === "score") drawScore(pres, slide, chart, table, 0.55, chartTop, chartW, chartH);
   else if (mode === "rank") drawRank(pres, slide, chart, table, 0.55, chartTop, chartW, chartH);
   else if (mode === "matrix") drawMatrix(pres, slide, chart, table, 0.55, chartTop, chartW, chartH);
   else if (mode === "trend") drawTrend(pres, slide, chart, 0.45, chartTop, chartW, chartH);

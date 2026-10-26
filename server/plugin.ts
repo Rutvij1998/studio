@@ -130,7 +130,7 @@ async function drawSlides(bytes: Buffer): Promise<string[]> {
   }
 }
 
-async function grok(input: unknown): Promise<unknown> {
+async function grok(input: unknown, timeout = 45000): Promise<unknown> {
   const key = envValue("XAI_API_KEY");
   if (!key) {
     const error = new Error("key");
@@ -141,7 +141,7 @@ async function grok(input: unknown): Promise<unknown> {
     method: "POST",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
     body: JSON.stringify({ model: "grok-4.7", store: false, input }),
-    signal: AbortSignal.timeout(45000),
+    signal: AbortSignal.timeout(timeout),
   });
   if (!response.ok) throw new Error("model");
   return response.json();
@@ -243,6 +243,34 @@ async function seeFor(loader: Loader, slides: { index: number; mime: string; bas
 
 type GradeRow = { index: number; title: string; text: string; problem: string };
 
+async function directFor(loader: Loader, raw: unknown): Promise<{ drop: string[]; keep: number[]; slides: unknown[] }> {
+  const director = await loader.ssrLoadModule("/src/director.ts");
+  const shape = await loader.ssrLoadModule("/src/shape.ts");
+  const packFacts = director.packFacts as (value: unknown) => unknown;
+  const guide = String(director.DIRECTOR_GUIDE ?? "");
+  const textFromResponse = shape.textFromResponse as (body: unknown) => string;
+  const packed = packFacts(raw);
+  try {
+    const body = await grok([
+      {
+        role: "user",
+        content: [{ type: "input_text", text: `${guide}\n\nDeck:\n${JSON.stringify(packed)}` }],
+      },
+    ], 90000);
+    const text = textFromResponse(body);
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start < 0 || end <= start) return { drop: [], keep: [], slides: [] };
+    const parsed = JSON.parse(text.slice(start, end + 1)) as { drop?: unknown; keep?: unknown; slides?: unknown };
+    const drop = Array.isArray(parsed.drop) ? parsed.drop.filter((item): item is string => typeof item === "string").slice(0, 8) : [];
+    const keep = Array.isArray(parsed.keep) ? parsed.keep.filter((item): item is number => typeof item === "number").slice(0, 24) : [];
+    const slides = Array.isArray(parsed.slides) ? parsed.slides.slice(0, 24) : [];
+    return { drop, keep, slides };
+  } catch {
+    return { drop: [], keep: [], slides: [] };
+  }
+}
+
 async function gradeFor(loader: Loader, rows: GradeRow[]): Promise<{ summary: string; notes: { index: number; note: string }[] }> {
   const critic = await loader.ssrLoadModule("/src/critic.ts");
   const shape = await loader.ssrLoadModule("/src/shape.ts");
@@ -315,6 +343,15 @@ function attach(server: Loader) {
           return;
         }
         send(res, 200, { slides: await rasterSlides(bytes) });
+        return;
+      }
+      if (req.method === "POST" && url === "/api/direct") {
+        const body = JSON.parse(await readBody(req, 200_000)) as unknown;
+        if (!envValue("XAI_API_KEY")) {
+          send(res, 200, { drop: [], keep: [], slides: [] });
+          return;
+        }
+        send(res, 200, await directFor(server, body));
         return;
       }
       if (req.method === "POST" && url === "/api/grade") {

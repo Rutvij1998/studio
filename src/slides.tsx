@@ -19,7 +19,7 @@ import { columnPoints, formatGridPoint, gridChartNote, gridLine, gridProgress, i
 import { isOutline, outlineLine } from "./outline";
 import { isSeries, rateOutlook, readingLine, seriesChartsSource, seriesProgressList, trackNote, trackTotals } from "./reading";
 import { coverWave } from "./dotWave";
-import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, chartSentence, compareSplit, compositionOf, copyBlocks, figureBody, fillBandIndex, formLabel, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, plotMode, posterPx, presentKind, proofPx, proofSplit, railLabel, rowDisplay, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
+import { axisMax, axisSpan, bulletLines, cardFace, chartEyebrow, chartFoot, chartSentence, compareSplit, directedComposition, copyBlocks, displayPx, figureBody, figurePx, figureShare, fillBandIndex, formLabel, formatPoint, gridAcross, heroAside, imageSize, isContinued, isSource, isTimeTitle, leadCopy, pictureLayout, pieceAir, pieceBands, pieceFit, plotMode, posterPx, presentKind, proofPx, proofSplit, railLabel, rowDisplay, sameFigure, slideRole, slideShow, spareHeaders, tableFromSlide, tableHasNumbers } from "./sourceDeck";
 import type { SheetGrid, SlidePiece, SourceChart, SourceSlide, SourceTable } from "./book";
 
 export type SlideId =
@@ -1077,27 +1077,33 @@ function leadAt(categories: string[], values: number[]): number {
 function ScoreChart({ chart, table }: { chart: SourceChart; table: SourceTable | null }) {
   const series = chart.series[0];
   if (!series) return null;
-  const cats = chart.categories.slice(0, 5);
+  const cats = chart.categories.slice(0, 8);
   const values = cats.map((_, index) => series.values[index] ?? 0);
   const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
   const lead = leadAt(cats, values);
   const rest = cats.map((_, index) => index).filter((index) => index !== lead);
+  const hero = cellText(table, cats[lead] ?? "", series, values[lead] ?? 0);
+  const wide = rest.length > 3;
   return (
-    <div className="score-board">
+    <div className={`score-board${rest.length ? " has-rest" : ""}${wide ? " is-wide" : ""}`}>
       <div className="score-hero">
-        <b aria-label={cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)}><Figure value={cellText(table, cats[lead] ?? "", series, values[lead] ?? 0)} /></b>
-        <span>{cats[lead]}</span>
-        <i><em style={{ width: `${((Math.max(0, values[lead] ?? 0)) / max) * 100}%` }} /></i>
+        <span className="score-name">{cats[lead]}</span>
+        <b aria-label={hero} style={{ fontSize: displayPx(hero, wide ? 84 : 128) }}><Figure value={hero} /></b>
+        <i className="score-beam"><em style={{ width: `${((Math.max(0, values[lead] ?? 0)) / max) * 100}%` }} /></i>
       </div>
       {rest.length > 0 ? (
-        <div className={`score-rest rest-${rest.length}`}>
-          {rest.map((index) => (
-            <div className="score-tile" key={`${cats[index]}-${index}`}>
-              <b aria-label={cellText(table, cats[index] ?? "", series, values[index] ?? 0)}><Figure value={cellText(table, cats[index] ?? "", series, values[index] ?? 0)} /></b>
-              <span>{cats[index]}</span>
-              <i><em style={{ width: `${((Math.max(0, values[index] ?? 0)) / max) * 100}%` }} /></i>
-            </div>
-          ))}
+        <div className={`score-constellation rest-${rest.length}`}>
+          {rest.map((index) => {
+            const value = values[index] ?? 0;
+            const written = cellText(table, cats[index] ?? "", series, value);
+            return (
+              <div className="score-star" key={`${cats[index]}-${index}`}>
+                <b aria-label={written} style={{ fontSize: displayPx(written, wide ? 22 : 32) }}><Figure value={written} /></b>
+                <i className={value <= 0 ? "is-flat" : undefined} style={{ ["--h" as string]: value <= 0 ? 0 : Math.max(0, value) / max }} />
+                <span>{cats[index]}</span>
+              </div>
+            );
+          })}
         </div>
       ) : null}
     </div>
@@ -1110,16 +1116,29 @@ function RankChart({ chart, table }: { chart: SourceChart; table: SourceTable | 
   const cats = chart.categories.slice(0, 14);
   const values = cats.map((_, index) => series.values[index] ?? 0);
   const max = Math.max(1, ...values.map((value) => Math.max(0, value)));
+  const lead = leadAt(cats, values);
+  const rest = cats.map((_, index) => index).filter((index) => index !== lead);
+  const hero = cellText(table, cats[lead] ?? "", series, values[lead] ?? 0);
   return (
-    <ol className="rank-chart" role="img" aria-label={chartSentence(chart)}>
-      {cats.map((cat, index) => (
-        <li key={`${cat}-${index}`}>
-          <span>{cat}</span>
-          <i><em style={{ width: `${(Math.max(0, values[index] ?? 0) / max) * 100}%` }} /></i>
-          <b aria-label={cellText(table, cat, series, values[index] ?? 0)}><Figure value={cellText(table, cat, series, values[index] ?? 0)} /></b>
-        </li>
-      ))}
-    </ol>
+    <div className="rank-signal" role="img" aria-label={chartSentence(chart)}>
+      <div className="rank-beacon">
+        <span>{cats[lead]}</span>
+        <b aria-label={hero} style={{ fontSize: displayPx(hero, 72) }}><Figure value={hero} /></b>
+      </div>
+      <ol className="rank-chart">
+        {rest.map((index) => {
+          const value = values[index] ?? 0;
+          const written = cellText(table, cats[index] ?? "", series, value);
+          return (
+            <li key={`${cats[index]}-${index}`}>
+              <span>{cats[index]}</span>
+              <i><em style={{ width: value <= 0 ? "0%" : `${(Math.max(0, value) / max) * 100}%` }} /></i>
+              <b aria-label={written}><Figure value={written} /></b>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
   );
 }
 
@@ -1142,12 +1161,15 @@ function MatrixChart({ chart, table }: { chart: SourceChart; table: SourceTable 
         return (
           <div className="matrix-row" key={`${cat}-${index}`} style={{ gridTemplateColumns: columns }}>
             <span className="matrix-name">{cat}</span>
-            {series.map((item, seriesIndex) => (
-              <span className="matrix-cell" key={item.name}>
-                <i><em className={`s${seriesIndex}`} style={{ width: `${(Math.max(0, item.values[index] ?? 0) / (maxes[seriesIndex] ?? 1)) * 100}%` }} /></i>
-                <b>{cellText(table, cat, item, item.values[index] ?? 0)}</b>
-              </span>
-            ))}
+            {series.map((item, seriesIndex) => {
+              const peak = item.values.reduce((best, value, valueIndex) => (value > (item.values[best] ?? 0) ? valueIndex : best), 0);
+              return (
+                <span className="matrix-cell" key={item.name}>
+                  <i><em className={`s${seriesIndex}`} style={{ width: `${(Math.max(0, item.values[index] ?? 0) / (maxes[seriesIndex] ?? 1)) * 100}%` }} /></i>
+                  <b className={index === peak && (item.values[index] ?? 0) > 0 ? "is-peak" : undefined}>{cellText(table, cat, item, item.values[index] ?? 0)}</b>
+                </span>
+              );
+            })}
             {spare.map((header) => {
               const column = table?.headers.findIndex((item) => item.trim() === header) ?? -1;
               return <b className="matrix-spare" key={header}>{column >= 0 ? row?.[column] ?? "" : ""}</b>;
@@ -1185,11 +1207,15 @@ function TrendChart({ chart }: { chart: SourceChart }) {
         ))}
         {series.map((item, index) => {
           const line = item.values.map((value, point) => `${point === 0 ? "M" : "L"}${xOf(point).toFixed(1)} ${yOf(value).toFixed(1)}`).join(" ");
+          const peak = item.values.reduce((best, value, point) => (value > (item.values[best] ?? -Infinity) ? point : best), 0);
           return (
             <g key={`${item.name}-${index}`} className={`s${index}`}>
               <path className="glow" d={line} />
               <path className="stroke" d={line} />
-              {item.values.map((value, point) => <circle key={point} cx={xOf(point)} cy={yOf(value)} r="5" />)}
+              {item.values.map((value, point) => <circle key={point} cx={xOf(point)} cy={yOf(value)} r={point === peak ? 8 : 5} />)}
+              {series.length === 1 && cats.length <= 8 ? null : (
+                <text className="point" x={xOf(peak)} y={yOf(item.values[peak] ?? 0) - 16} textAnchor="middle">{formatPoint(item.values[peak] ?? 0)}</text>
+              )}
             </g>
           );
         })}
@@ -1213,6 +1239,10 @@ function OriginColumns({ chart, stacked }: { chart: SourceChart; stacked: boolea
     ? series.reduce((total, item) => total + Math.max(0, item.values[index] ?? 0), 0)
     : Math.max(0, ...series.map((item) => item.values[index] ?? 0)));
   const max = axisMax(Math.max(0, ...peaks));
+  const only = series.length === 1 ? series[0] : null;
+  const peakIndex = only
+    ? only.values.reduce((best, value, index) => (value > (only.values[best] ?? -Infinity) ? index : best), 0)
+    : -1;
   return (
     <div className="origin-chart">
       <div className="origin-axis" aria-hidden>
@@ -1239,7 +1269,7 @@ function OriginColumns({ chart, stacked }: { chart: SourceChart; stacked: boolea
                   const value = item.values[index] ?? 0;
                   const printed = formatPoint(value);
                   return (
-                    <i key={`${item.name}-${seriesIndex}`} className={`s${seriesIndex}`} style={{ ["--h" as string]: Math.max(0, value) / max }}>
+                    <i key={`${item.name}-${seriesIndex}`} className={`s${seriesIndex}${only && index === peakIndex ? " is-peak" : ""}`} style={{ ["--h" as string]: Math.max(0, value) / max }}>
                       {printed.length <= 8 ? <em>{printed}</em> : null}
                     </i>
                   );
@@ -1370,7 +1400,7 @@ function OriginChart({ slide }: { slide: SourceSlide }) {
   if (!chart) return null;
   const mode = plotMode(chart);
   const inline = mode === "score" || mode === "rank" || mode === "matrix";
-  const limit = mode === "rank" ? 14 : mode === "trend" || mode === "funnel" ? 16 : mode === "matrix" ? 12 : mode === "score" ? 5 : 12;
+  const limit = mode === "rank" ? 14 : mode === "trend" || mode === "funnel" ? 16 : mode === "matrix" ? 12 : mode === "score" ? 8 : 12;
   const hidden = chart.categories.length > limit;
   const eyebrow = chartEyebrow(chart);
   const note = [
@@ -1801,7 +1831,7 @@ function OriginProse({ slide }: { slide: SourceSlide }) {
   );
 }
 
-function PieceStack({ pieces, stretch }: { pieces: SlidePiece[]; stretch?: "cards" | "lists" }) {
+function PieceStack({ pieces, stretch, figureScale }: { pieces: SlidePiece[]; stretch?: "cards" | "lists"; figureScale?: "air" | "read" | "plate" }) {
   const bands = pieceBands(pieces);
   const fillAt = stretch === "lists"
     ? bands.findIndex((band) => band.kind === "lists")
@@ -1839,15 +1869,28 @@ function PieceStack({ pieces, stretch }: { pieces: SlidePiece[]; stretch?: "card
           );
         }
         const across = gridAcross(band.tone, band.items.length);
+        const displays = band.tone === "stat" ? band.items.map((item) => item.display) : [];
+        const shared = sameFigure(displays);
+        const scaled = figureScale === "air" || figureScale === "read";
+        const ceiling = figureScale === "air" ? (band.items.length > 2 ? 96 : 128) : figureScale === "read" ? 72 : 0;
         return (
           <div className={`piece-grid is-${band.tone}${fill ? " is-fill" : ""}`} data-across={across} key={index}>
-            {band.items.map((item, itemIndex) => (
-              <article key={`${item.title}-${itemIndex}`} data-face={cardFace(item.title) || undefined}>
-                {item.display ? <b aria-label={item.display}><Figure value={item.display} /></b> : null}
-                <strong>{item.display ? item.label || item.title : item.title}</strong>
-                {item.detail ? <span>{item.detail}</span> : null}
-              </article>
-            ))}
+            {band.items.map((item, itemIndex) => {
+              const share = shared && item.display && (scaled || !item.detail.trim()) ? figureShare(item.display, displays) : null;
+              const size = ceiling && item.display ? figurePx(item.display, displays, ceiling) : 0;
+              return (
+                <article
+                  key={`${item.title}-${itemIndex}`}
+                  data-face={cardFace(item.title) || undefined}
+                  data-share={share != null ? "" : undefined}
+                  style={share != null ? { ["--h" as string]: String(share) } : undefined}
+                >
+                  {item.display ? <b aria-label={item.display} style={size ? { fontSize: size } : undefined}><Figure value={item.display} /></b> : null}
+                  <strong>{item.display ? item.label || item.title : item.title}</strong>
+                  {item.detail ? <span>{item.detail}</span> : null}
+                </article>
+              );
+            })}
           </div>
         );
       })}
@@ -1897,13 +1940,13 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
 function OriginPieces({ slide }: { slide: SourceSlide }) {
   const continued = isContinued(slide);
   const pieces = slide.pieces ?? [];
-  const composition = compositionOf(pieces, slide.title);
+  const composition = directedComposition(slide);
   const compare = composition === "versus" ? compareSplit(pieces) : null;
   const aside = composition === "hero" ? heroAside(pieces) : null;
   const proof = composition === "proof" ? proofSplit(pieces) : null;
   const poster = composition === "poster" && pieces[0]?.kind === "prose" ? pieces[0].text : "";
   const air = pieceAir(slide) && slide.images.length === 0;
-  const stretch = !air ? undefined : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" ? "cards" : undefined;
+  const stretch = !air ? undefined : composition === "path" ? "lists" : composition === "stack" || composition === "metrics" || composition === "cascade" ? "cards" : undefined;
   return (
     <article className={`slide piece-slide is-${composition}${air ? " is-air" : ""}`} data-fit={pieceFit(slide)} data-composition={composition}>
       {continued ? <p className="kicker">Continued</p> : null}
@@ -1924,7 +1967,7 @@ function OriginPieces({ slide }: { slide: SourceSlide }) {
         {compare ? (
           <>
             {compare.before.length ? <PieceStack pieces={compare.before} /> : null}
-            <div className={`piece-split is-versus${air ? " is-fill" : ""}`}>
+            <div className="piece-split is-versus">
               <div><PieceStack pieces={compare.left} /></div>
               <div><PieceStack pieces={compare.right} /></div>
             </div>
@@ -1933,14 +1976,20 @@ function OriginPieces({ slide }: { slide: SourceSlide }) {
         {aside ? (
           <div className="piece-aside is-fill">
             <article>
-              <b aria-label={aside.stat.display}><Figure value={aside.stat.display} /></b>
+              <b aria-label={aside.stat.display} style={{ fontSize: displayPx(aside.stat.display, air ? 120 : pieceFit(slide) === "roomy" ? 72 : 56) }}><Figure value={aside.stat.display} /></b>
               <strong>{aside.stat.label || aside.stat.title}</strong>
               {aside.stat.detail ? <span>{aside.stat.detail}</span> : null}
             </article>
             <div><PieceStack pieces={aside.rest} /></div>
           </div>
         ) : null}
-        {!poster && !proof && !compare && !aside ? <PieceStack pieces={pieces} stretch={stretch} /> : null}
+        {!poster && !proof && !compare && !aside ? (
+        <PieceStack
+          pieces={pieces}
+          stretch={stretch}
+          figureScale={composition === "cascade" ? (air ? "air" : "read") : composition === "metrics" ? "plate" : undefined}
+        />
+      ) : null}
       </div>
       {slide.images.length ? (
         <div className="picture-stage">

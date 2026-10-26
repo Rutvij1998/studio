@@ -11,6 +11,7 @@ import { rateOutlook, seriesProgressList, trackNote } from "./reading";
 import { markRequest } from "./mark";
 import { addSlidePictures, canFlip, chartSentence, deleteSlide, duplicateSlide, formatPoint, mergeSlides, moveSlide, readSourceDeck, removeSlidePicture, replaceSlides, showSlide, slideRead, slideShow, sourceSummary, type SlideEdit } from "./sourceDeck";
 import { gradeBrief, type GradeMark } from "./critic";
+import { acceptPlan, applyPlan, deckFacts } from "./director";
 import { GUIDE_BEATS, GUIDE_MS, HomeBeats, HomePreview } from "./homeGuide";
 
 const W = 1280;
@@ -23,6 +24,7 @@ function clip(text: string): string {
 }
 
 const originalCache = new Map<string, Promise<string[]>>();
+let directTicket = 0;
 
 function loadOriginal(file: File): Promise<string[]> {
   const key = `${file.name}:${file.size}:${file.lastModified}`;
@@ -205,40 +207,75 @@ export function App() {
       return;
     }
     setBusy(true);
-    setBusyLabel("Restyling");
+    setBusyLabel("Reading the deck");
     setIssue(null);
     setComparing(false);
     setOriginals([]);
     setOriginalsReady(false);
     originalTicket.current += 1;
+    const ticket = ++directTicket;
     try {
       const read = await readSourceDeck(await file.arrayBuffer(), file.name);
+      if (directTicket !== ticket) return;
       if (read.deck.slides.length === 0) {
         setIssue(`${file.name} has no slides.`);
         return;
       }
+      const original = read.deck.slides;
+      let slides = original;
+      let directed = false;
+      setBusyLabel("Choosing the layout");
+      try {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 35000);
+        const response = await fetch("/api/direct", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(deckFacts(original)),
+          signal: controller.signal,
+        });
+        window.clearTimeout(timer);
+        if (response.ok && directTicket === ticket) {
+          const body = await response.json() as unknown;
+          const facts = deckFacts(original);
+          const incoming = body && typeof body === "object" ? body as { drop?: unknown; keep?: unknown; slides?: unknown } : {};
+          const drop = [...facts.repeated, ...(Array.isArray(incoming.drop) ? incoming.drop : [])];
+          const applied = applyPlan(original, acceptPlan(original, { ...incoming, drop }));
+          slides = applied.slides;
+          directed = applied.changed;
+        }
+      } catch {
+        const applied = applyPlan(original, acceptPlan(original, { drop: deckFacts(original).repeated, keep: [], slides: [] }));
+        slides = applied.slides;
+        directed = applied.changed;
+      }
+      if (directTicket !== ticket) return;
       const title = read.deck.title;
       const next = await attachMark({
         ...emptyBook(),
         client: title,
         sourceName: file.name,
         sourceText: clip(read.text),
-        sourceDeck: { ...read.deck, title },
+        sourceDeck: { ...read.deck, title, slides },
       });
-      const pictures = read.deck.slides.reduce((total, item) => total + item.images.length, 0);
+      if (directTicket !== ticket) return;
+      const pictures = slides.reduce((total, item) => total + item.images.length, 0);
+      const directedNote = directed ? "Director kept every figure and adjusted the layout." : "";
       setBook(next);
       setDeckName(file.name);
       setFiles([{ id: `${file.name}:${file.size}`, file }]);
-      setNote([read.note, pictures ? `${pictures} ${pictures === 1 ? "picture stays" : "pictures stay"} on the slides.` : ""].filter(Boolean).join(" "));
+      setNote([read.note, pictures ? `${pictures} ${pictures === 1 ? "picture stays" : "pictures stay"} on the slides.` : "", directedNote].filter(Boolean).join(" "));
       setUnderstood(`${sourceSummary(next.sourceDeck ?? read.deck)}${next.logo ? ` The ${next.client} mark is on the cover.` : ""}`);
       setIndex(0);
       setMode("studio");
       setPresenting(true);
     } catch (error) {
-      setIssue(error instanceof Error ? error.message : "Could not read that deck.");
+      if (directTicket === ticket) setIssue(error instanceof Error ? error.message : "Could not read that deck.");
     } finally {
-      setBusy(false);
-      setBusyLabel("Restyling");
+      if (directTicket === ticket) {
+        setBusy(false);
+        setBusyLabel("Restyling");
+      }
     }
   };
 
@@ -292,7 +329,7 @@ export function App() {
           <strong>{book.client || deckName || "Untitled deck"}</strong>
         </div>
         <div className="top-side">
-          <button type="button" className="ghost" onClick={() => { setPresenting(false); setComparing(false); setOriginals([]); setOriginalsReady(false); originalTicket.current += 1; setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
+          <button type="button" className="ghost" onClick={() => { setPresenting(false); setComparing(false); setOriginals([]); setOriginalsReady(false); originalTicket.current += 1; directTicket += 1; setBook(emptyBook()); setFiles([]); setDeckName(null); setUnderstood(""); setNote("Drop a PowerPoint. Every slide is kept."); setMode("home"); }}>
             New deck
           </button>
           <button type="button" className="ghost" onClick={() => setPresenting(true)} disabled={slides.length === 0}>
@@ -1306,7 +1343,7 @@ function Home({
                 </svg>
               </span>
               <strong>{busy ? busyLabel : "Drop a PowerPoint here"}</strong>
-              <span>{busy ? "Reading every slide." : "Click to upload. Every slide is kept."}</span>
+              <span>{busy ? (busyLabel === "Choosing the layout" ? "Deciding what stays and what changes." : "Every slide is kept.") : "Click to upload. Every slide is kept."}</span>
             </label>
             {files.length > 0 && (
               <ul className="held">
@@ -1332,6 +1369,14 @@ function Home({
         <HomePreview index={beat} onPause={setPaused} />
         <HomeBeats index={beat} onPick={setBeat} onPause={setPaused} />
       </main>
+      {busy ? (
+        <div className="home-loading" role="status" aria-live="polite">
+          <div>
+            <p>Loading</p>
+            <span>{busyLabel === "Choosing the layout" ? "Choosing the layout." : "Reading the deck."}</span>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

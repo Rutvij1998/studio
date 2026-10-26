@@ -1,7 +1,7 @@
 import PptxGenJS from "pptxgenjs";
 import type { SourceSlide } from "./book.ts";
 import { readDeckText } from "./parse.ts";
-import { addSlidePictures, bulletLines, canFlip, cardFace, chartSentence, compareSplit, copyBlocks, deleteSlide, duplicateSlide, heroAside, imageSize, isSource, isTimeTitle, leadCopy, mergeSlides, moveSlide, pictureLayout, pieceDensity, piecesOf, presentKind, readSourceDeck, showSlide, slideRead, slideShow, sourceSummary, tableFromSlide } from "./sourceDeck.ts";
+import { addSlidePictures, bulletLines, canFlip, cardFace, chartSentence, compareSplit, compositionOf, copyBlocks, deleteSlide, duplicateSlide, figurePx, heroAside, imageSize, isSource, isTimeTitle, leadCopy, mergeSlides, moveSlide, pictureLayout, pieceDensity, piecesOf, presentKind, readSourceDeck, sameFigure, showSlide, slideRead, slideShow, sourceSummary, tableFromSlide } from "./sourceDeck.ts";
 
 const failures: string[] = [];
 const expect = (label: string, actual: unknown, wanted: unknown) => {
@@ -409,6 +409,30 @@ const aside = heroAside([
 ]);
 expect("hero sits aside", aside?.stat.display ?? "", "$2M");
 expect("hero keeps the list", aside?.rest[1]?.kind === "list" ? aside.rest[1].title : "", "Work within the constraints");
+expect("mixed units do not compare", sameFigure(["18%", "5+", "$2M"]), false);
+expect("percents compare", sameFigure(["12%", "64%"]), true);
+expect("larger value is larger type", figurePx("64%", ["12%", "64%"], 128) > figurePx("12%", ["12%", "64%"], 128), true);
+expect("order does not pick the hero", figurePx("12%", ["12%", "64%"], 128), figurePx("12%", ["64%", "12%"], 128));
+expect("long money steps down", figurePx("$12,450,000", ["$12,450,000", "$4M"], 128) < 70, true);
+expect("short peer stays under the long one", figurePx("$4M", ["$12,450,000", "$4M"], 128) <= figurePx("$12,450,000", ["$12,450,000", "$4M"], 128), true);
+expect("two rates cascade", compositionOf(piecesOf(["12% First pass", "64% Second pass"]), "Two rates"), "cascade");
+expect("mixed stays metrics", compositionOf(piecesOf([
+  "18% Leak\nOne owner is missing from the handoff and nobody closes it.",
+  "5+ Teams\nFive groups touch the same claim before anyone owns the outcome.",
+  "$2M Cost\nThe wait costs this much and the sentence is part of the card.",
+]), "The mix"), "metrics");
+expect("before is a contrast", compareSplit([
+  { kind: "card", title: "Before", detail: "Five days.", display: "", label: "" },
+  { kind: "card", title: "After", detail: "A lane.", display: "", label: "" },
+]) != null, true);
+expect("phase is a sequence", isTimeTitle("Phase 1"), true);
+expect("staging is not a stage", isTimeTitle("Staging"), false);
+const sentenceThen = [
+  { kind: "prose" as const, text: "The wait is the cost." },
+  { kind: "card" as const, title: "Saved this year", detail: "", display: "$2M", label: "Saved this year" },
+];
+expect("sentence then figure is a hero", heroAside(sentenceThen)?.stat.display ?? "", "$2M");
+expect("that hero is the composition", compositionOf(sentenceThen, "One number"), "hero");
 
 const headed = piecesOf([
   "Work within the constraints",

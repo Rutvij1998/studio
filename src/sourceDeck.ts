@@ -55,9 +55,9 @@ export function plotMode(chart: SourceChart): PlotMode {
   const years = chart.series.length >= 2 && chart.series.every((series) => /^(19|20)\d{2}$/.test(series.name.trim()));
   if (years && chart.categories.length <= 8) return "columns";
   if (chart.series.length >= 2) return "matrix";
-  if (chart.categories.length <= 5) return "score";
-  if (chart.kind === "bars" || chart.categories.length > 8) return "rank";
-  return "columns";
+  const longName = chart.categories.some((category) => category.trim().length > 28);
+  if (chart.categories.length > 0 && chart.categories.length <= 8 && !longName) return "score";
+  return "rank";
 }
 
 /** A heading only when it says more than the title. "Bars" is not a heading. */
@@ -1234,12 +1234,22 @@ function joinLoneStat(bands: PieceBand[]): PieceBand[] {
   return out;
 }
 
-/** Today on the left and Tomorrow on the right, when both headings are on the slide. */
+const COMPARE_PAIRS: Array<[RegExp, RegExp]> = [
+  [/^today\b/i, /^tomorrow\b/i],
+  [/^before\b/i, /^after\b/i],
+  [/^current\b/i, /^future\b/i],
+  [/^current\b/i, /^proposed\b/i],
+];
+
+/** A contrast the author already named, with the left heading near the start of the slide. */
 export function compareSplit(pieces: SlidePiece[]): { before: SlidePiece[]; left: SlidePiece[]; right: SlidePiece[] } | null {
-  const leftAt = pieces.findIndex((piece) => piece.kind === "card" && /^today\b/i.test(piece.title.trim()));
-  const rightAt = pieces.findIndex((piece) => piece.kind === "card" && /^tomorrow\b/i.test(piece.title.trim()));
-  if (leftAt < 0 || rightAt <= leftAt || leftAt > 1) return null;
-  return { before: pieces.slice(0, leftAt), left: pieces.slice(leftAt, rightAt), right: pieces.slice(rightAt) };
+  for (const [leftName, rightName] of COMPARE_PAIRS) {
+    const leftAt = pieces.findIndex((piece) => piece.kind === "card" && leftName.test(piece.title.trim()));
+    const rightAt = pieces.findIndex((piece) => piece.kind === "card" && rightName.test(piece.title.trim()));
+    if (leftAt < 0 || rightAt <= leftAt || leftAt > 1) continue;
+    return { before: pieces.slice(0, leftAt), left: pieces.slice(leftAt, rightAt), right: pieces.slice(rightAt) };
+  }
+  return null;
 }
 
 export type CardFace = "" | "green" | "amber" | "red" | "ink";
@@ -1254,22 +1264,86 @@ export function cardFace(title: string): CardFace {
   return "";
 }
 
-/** Day and week headings are a sequence, in the order they were written. */
+/** A short heading that is already a sequence: day, week, phase, step, stage, quarter, or sprint. */
 export function isTimeTitle(title: string): boolean {
-  return /^(?:days?|weeks?)\b/i.test(title.trim());
+  const head = title.trim().split("\n")[0] ?? "";
+  return head.length > 0 && head.length <= 36 && /^(?:days?|weeks?|phases?|steps?|stages?|quarters?|sprints?)\b/i.test(head);
 }
 
 /** One hero figure beside the cards and list that explain it. A row of figures stays a row. */
 export function heroAside(pieces: SlidePiece[]): { stat: CardPiece; rest: SlidePiece[] } | null {
-  const first = pieces[0];
-  if (!first || first.kind !== "card" || !first.display) return null;
-  const rest = pieces.slice(1);
+  const index = pieces.findIndex((piece) => piece.kind === "card" && piece.display);
+  if (index < 0 || index > 1) return null;
+  const stat = pieces[index];
+  if (!stat || stat.kind !== "card") return null;
+  const rest = pieces.filter((_, item) => item !== index);
   if (rest.length < 1 || rest.length > 4) return null;
-  if (rest.some((piece) => piece.kind === "card" && Boolean(piece.display))) return null;
-  return { stat: first, rest };
+  if (rest.some((piece) => piece.kind === "card" && piece.display)) return null;
+  return { stat, rest };
 }
 
-export type Composition = "poster" | "proof" | "versus" | "hero" | "path" | "metrics" | "stack";
+export type FigureUnit = "percent" | "money" | "plus" | "count" | "count-k" | "count-m" | "count-bn";
+
+/** The number written on the card, when the whole label is that number. Mixed units do not compare. */
+export function figureMeasure(display: string): { value: number; unit: FigureUnit } | null {
+  const text = display.replace(/\s+/g, " ").trim();
+  const match = text.match(/^(?<currency>[$£€])?\s*(?<num>\d[\d,]*(?:\.\d+)?)(?:\s*(?<suffix>%|\+|k|m|bn|million|billion))?$/i);
+  if (!match?.groups?.num) return null;
+  const raw = Number(match.groups.num.replace(/,/g, ""));
+  if (!Number.isFinite(raw)) return null;
+  const suffix = (match.groups.suffix ?? "").toLowerCase();
+  const scaled = suffix === "k" ? raw * 1_000
+    : suffix === "m" || suffix === "million" ? raw * 1_000_000
+      : suffix === "bn" || suffix === "billion" ? raw * 1_000_000_000
+        : raw;
+  if (match.groups.currency) return { value: scaled, unit: "money" };
+  if (suffix === "%") return { value: raw, unit: "percent" };
+  if (suffix === "+") return { value: raw, unit: "plus" };
+  if (suffix === "k") return { value: scaled, unit: "count-k" };
+  if (suffix === "m" || suffix === "million") return { value: scaled, unit: "count-m" };
+  if (suffix === "bn" || suffix === "billion") return { value: scaled, unit: "count-bn" };
+  return { value: raw, unit: "count" };
+}
+
+/** True when every figure is the same kind of number, so their sizes can share a scale. */
+export function sameFigure(displays: string[]): boolean {
+  const measures = displays.map(figureMeasure);
+  const first = measures[0];
+  return Boolean(first) && measures.length >= 2 && measures.every((item) => item?.unit === first?.unit);
+}
+
+/** Share of the largest figure in the group. Unrelated units stay even. */
+export function figureShare(display: string, peers: string[]): number {
+  if (!sameFigure(peers)) return 1;
+  const own = figureMeasure(display);
+  const max = Math.max(...peers.map((item) => Math.abs(figureMeasure(item)?.value ?? 0)));
+  if (!own || max <= 0) return 1;
+  return Math.max(0, Math.min(1, Math.abs(own.value) / max));
+}
+
+/** A long figure steps down so the written string still fits the box. */
+export function displayPx(text: string, ceiling: number): number {
+  const length = text.trim().length;
+  const scaled = length <= 5 ? ceiling
+    : length <= 7 ? ceiling * 0.75
+      : length <= 10 ? ceiling * 0.58
+        : length <= 14 ? ceiling * 0.46
+          : ceiling * 0.36;
+  return Math.max(28, Math.round(scaled));
+}
+
+/** Same-unit figures keep a readable floor. The largest value sets the top, and a long string lowers that top for the whole group. The bar carries the true ratio. */
+export function figurePx(display: string, peers: string[], ceiling: number): number {
+  const cap = displayPx(display, ceiling);
+  if (!sameFigure(peers)) return cap;
+  const leaders = peers.filter((item) => figureShare(item, peers) >= 0.999);
+  const top = Math.min(...(leaders.length ? leaders : peers).map((item) => displayPx(item, ceiling)));
+  const floor = Math.max(28, Math.round(top * 0.62));
+  const sized = Math.round(floor + (top - floor) * figureShare(display, peers));
+  return Math.min(cap, Math.max(28, sized));
+}
+
+export type Composition = "poster" | "proof" | "versus" | "hero" | "path" | "metrics" | "cascade" | "stack";
 
 /** A sentence and the one card that proves it. */
 export function proofSplit(pieces: SlidePiece[]): { text: string; card: CardPiece } | null {
@@ -1283,10 +1357,18 @@ export function proofSplit(pieces: SlidePiece[]): { text: string; card: CardPiec
   return { text: lead.text, card };
 }
 
+/** Two or three short figures of the same kind can share a scale. A percent beside a dollar stays even. */
+function cascadeBand(pieces: SlidePiece[]): boolean {
+  const band = pieceBands(pieces).find((item) => item.kind === "cards" && item.tone === "stat" && item.items.length >= 2 && item.items.length <= 3);
+  if (!band || band.kind !== "cards") return false;
+  if (!band.items.every((item) => item.detail.trim().length <= 48)) return false;
+  return sameFigure(band.items.map((item) => item.display));
+}
+
 /**
  * The layout follows the shape already in the slide.
  * A comparison, a hero figure, a timed path, a lone sentence, a sentence plus one card, or a row of figures.
- * Everything else stays a stack.
+ * Two or three short figures of one unit share a scale. Everything else stays a stack.
  */
 export function compositionOf(pieces: SlidePiece[], title = ""): Composition {
   if (!pieces.length) return "stack";
@@ -1303,8 +1385,38 @@ export function compositionOf(pieces: SlidePiece[], title = ""): Composition {
   const lone = pieces[0];
   if (!title.trim() && pieces.length === 1 && lone?.kind === "prose" && lone.text.trim().length > 0 && lone.text.length <= 420) return "poster";
   if (proofSplit(pieces)) return "proof";
-  if (bands.some((band) => band.kind === "cards" && band.tone === "stat" && band.items.length >= 2 && band.items.length <= 4)) return "metrics";
+  if (cascadeBand(pieces)) return "cascade";
+  if (bands.some((band) => band.kind === "cards" && band.tone === "stat" && band.items.length >= 2)) return "metrics";
   return "stack";
+}
+
+/** The director may choose a layout only when this slide can already draw it. */
+export function directionFits(role: Composition, pieces: SlidePiece[], title: string): boolean {
+  if (role === "cascade") return cascadeBand(pieces);
+  if (role === "metrics") return pieces.filter((piece) => piece.kind === "card" && piece.display).length >= 2;
+  if (role === "hero") return heroAside(pieces) != null;
+  if (role === "versus") return compareSplit(pieces) != null;
+  if (role === "proof") return proofSplit(pieces) != null;
+  if (role === "poster") return !title.trim() && pieces.length === 1 && pieces[0]?.kind === "prose" && pieces[0].text.length <= 420;
+  if (role === "path") {
+    const bands = pieceBands(pieces);
+    const structured = bands.filter((band) => band.kind !== "prose");
+    const only = structured[0];
+    return structured.length === 1 && only?.kind === "lists" && only.items.filter((item) => isTimeTitle(item.title)).length >= 2;
+  }
+  return pieces.length > 0;
+}
+
+/** Code layout, unless the director chose another one this slide can draw. A richer layout is not flattened. */
+export function directedComposition(slide: Pick<SourceSlide, "pieces" | "title" | "direction">): Composition {
+  const pieces = slide.pieces ?? [];
+  const natural = compositionOf(pieces, slide.title);
+  const wanted = slide.direction;
+  if (!wanted || wanted === natural) return natural;
+  const rich = natural === "metrics" || natural === "cascade" || natural === "hero" || natural === "versus" || natural === "path" || natural === "proof";
+  if (rich && (wanted === "stack" || wanted === "poster")) return natural;
+  if (!directionFits(wanted, pieces, slide.title)) return natural;
+  return wanted;
 }
 
 /** Display size for a sentence that is the slide. Shorter copy gets larger type. */
@@ -1386,6 +1498,7 @@ export function occupy(pieces: SlidePiece[], fit: PieceFit, options: { title: st
   }
   const main = pieceBands(pieces);
   main.forEach((band, index) => add(bandHeight(band, type) + closingLift(band, index, main.length)));
+  if (compositionOf(pieces) === "cascade") height += 22;
   return height + 12;
 }
 

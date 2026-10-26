@@ -161,6 +161,8 @@ export type SourceSlide = {
   pace?: string;
   /** Chart, table, or both. Empty means both when the file has both. */
   show?: "chart" | "table" | "both";
+  /** A layout the director chose. Empty means the code chooses. */
+  direction?: "poster" | "proof" | "versus" | "hero" | "path" | "metrics" | "cascade" | "stack";
 };
 
 /** A deck read slide by slide. */
