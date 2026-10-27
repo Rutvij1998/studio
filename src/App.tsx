@@ -69,7 +69,6 @@ export function App() {
   const [mode, setMode] = useState<"home" | "studio">("home");
   const [files, setFiles] = useState<Held[]>([]);
   const [busy, setBusy] = useState(false);
-  const [busyLabel, setBusyLabel] = useState("Restyling");
   const [book, setBook] = useState<Book>(emptyBook());
   const [options, setOptions] = useState<DeckOptions>(DEFAULT_OPTIONS);
   const [index, setIndex] = useState(0);
@@ -207,7 +206,6 @@ export function App() {
       return;
     }
     setBusy(true);
-    setBusyLabel("Reading the deck");
     setIssue(null);
     setComparing(false);
     setOriginals([]);
@@ -222,33 +220,9 @@ export function App() {
         return;
       }
       const original = read.deck.slides;
-      let slides = original;
-      let directed = false;
-      setBusyLabel("Choosing the layout");
-      try {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 35000);
-        const response = await fetch("/api/direct", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify(deckFacts(original)),
-          signal: controller.signal,
-        });
-        window.clearTimeout(timer);
-        if (response.ok && directTicket === ticket) {
-          const body = await response.json() as unknown;
-          const facts = deckFacts(original);
-          const incoming = body && typeof body === "object" ? body as { drop?: unknown; keep?: unknown; slides?: unknown } : {};
-          const drop = [...facts.repeated, ...(Array.isArray(incoming.drop) ? incoming.drop : [])];
-          const applied = applyPlan(original, acceptPlan(original, { ...incoming, drop }));
-          slides = applied.slides;
-          directed = applied.changed;
-        }
-      } catch {
-        const applied = applyPlan(original, acceptPlan(original, { drop: deckFacts(original).repeated, keep: [], slides: [] }));
-        slides = applied.slides;
-        directed = applied.changed;
-      }
+      const applied = applyPlan(original, acceptPlan(original, { drop: deckFacts(original).repeated, keep: [], slides: [] }));
+      const slides = applied.slides;
+      const directed = applied.changed;
       if (directTicket !== ticket) return;
       const title = read.deck.title;
       const next = await attachMark({
@@ -272,10 +246,7 @@ export function App() {
     } catch (error) {
       if (directTicket === ticket) setIssue(error instanceof Error ? error.message : "Could not read that deck.");
     } finally {
-      if (directTicket === ticket) {
-        setBusy(false);
-        setBusyLabel("Restyling");
-      }
+      if (directTicket === ticket) setBusy(false);
     }
   };
 
@@ -312,7 +283,6 @@ export function App() {
         clearFile={() => setFiles([])}
         issue={issue}
         busy={busy}
-        busyLabel={busyLabel}
       />
     );
   }
@@ -367,6 +337,7 @@ export function App() {
           label={`Slide ${index + 1} of ${slides.length}, ${slide.label}. ${slide.form}.`}
           caption={slide.label}
           detail={slide.id === "mix" ? (options.mix === "columns" ? "Columns" : options.mix === "meter" ? "Meter" : "Donut") : slide.id === "listening" ? (options.listening === "columns" ? "Columns" : "Rows") : slide.form}
+          notes={speakerNotes(book, slide.track)}
           index={index}
           count={slides.length}
           onPrev={() => setIndex((current) => Math.max(0, current - 1))}
@@ -435,6 +406,7 @@ export function App() {
           grade={review.grade.grade}
           summary={spoken.summary || review.grade.summary}
           marks={reviewMarks}
+          notes={speakerNotes(book, slide.track)}
           reviewOpen={reviewOpen}
           onReview={() => setReviewOpen((current) => !current)}
         >
@@ -463,6 +435,7 @@ function PresentDeck({
   grade,
   summary,
   marks,
+  notes,
   reviewOpen,
   onReview,
 }: {
@@ -483,14 +456,17 @@ function PresentDeck({
   grade: string;
   summary: string;
   marks: GradeMark[];
+  notes: string;
   reviewOpen: boolean;
   onReview: () => void;
 }) {
   const [scale, setScale] = useState(1);
+  const showNotes = Boolean(notes.trim()) && !comparing;
   useEffect(() => {
     const measure = () => {
+      const notesH = showNotes ? 128 : 0;
       if (!comparing) {
-        setScale(Math.max(0.2, Math.min(window.innerWidth / W, (window.innerHeight - 76) / H)));
+        setScale(Math.max(0.2, Math.min(window.innerWidth / W, (window.innerHeight - 76 - notesH) / H)));
         return;
       }
       const width = (window.innerWidth - 64 - 36) / (W * 2);
@@ -500,7 +476,7 @@ function PresentDeck({
     measure();
     window.addEventListener("resize", measure);
     return () => window.removeEventListener("resize", measure);
-  }, [comparing]);
+  }, [comparing, showNotes]);
   const frame = (node: ReactNode) => (
     <div className="present-frame" style={{ width: W * scale, height: H * scale }}>
       <div className="fit-inner" style={{ transform: `scale(${scale})` }}>{node}</div>
@@ -508,7 +484,7 @@ function PresentDeck({
   );
   const yours = !origin ? "" : sameOrigin ? "Same slide in your file" : `Slide ${origin} in your file`;
   return (
-    <div className={comparing ? "present is-comparing" : "present"} role="dialog" aria-modal="true" aria-label={comparing ? "Comparison" : "Presentation"} data-origin={origin || undefined}>
+    <div className={comparing ? "present is-comparing" : showNotes ? "present has-notes" : "present"} role="dialog" aria-modal="true" aria-label={comparing ? "Comparison" : "Presentation"} data-origin={origin || undefined}>
       {comparing ? (
         <div className="compare-stage">
           <div className="compare-col">
@@ -529,6 +505,12 @@ function PresentDeck({
           </div>
         </div>
       ) : frame(children)}
+      {showNotes ? (
+        <section className="present-notes" aria-label="Speaker notes">
+          <b>Speaker notes</b>
+          {notes}
+        </section>
+      ) : null}
       <footer className="present-bar">
         <p>{title}</p>
         <div className="present-dots" role="tablist" aria-label="Slides">
@@ -969,11 +951,17 @@ function Editor({
   );
 }
 
+function speakerNotes(book: Book, track: number | undefined): string {
+  if (!book.sourceDeck || !track) return "";
+  return book.sourceDeck.slides.find((item) => item.index === track)?.spoken?.trim() ?? "";
+}
+
 function Stage({
   children,
   label,
   caption,
   detail,
+  notes,
   index,
   count,
   onPrev,
@@ -983,6 +971,7 @@ function Stage({
   label: string;
   caption: string;
   detail: string;
+  notes: string;
   index: number;
   count: number;
   onPrev: () => void;
@@ -999,7 +988,7 @@ function Stage({
       const padX = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
       const padY = parseFloat(style.paddingTop) + parseFloat(style.paddingBottom);
       const width = el.clientWidth - padX;
-      const height = el.clientHeight - padY - 76;
+      const height = el.clientHeight - padY - 76 - (notes.trim() ? 88 : 0);
       const fromWidth = width / W;
       const fromHeight = height / H;
       const narrow = window.matchMedia("(max-width: 1080px)").matches;
@@ -1010,7 +999,7 @@ function Stage({
     const observer = new ResizeObserver(measure);
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [notes]);
 
   return (
     <div className="stage-wrap" ref={ref}>
@@ -1032,6 +1021,12 @@ function Stage({
             <Chevron flip />
           </button>
         </div>
+        {notes.trim() ? (
+          <section className="stage-notes" aria-label="Speaker notes">
+            <b>Speaker notes</b>
+            {notes}
+          </section>
+        ) : null}
       </div>
     </div>
   );
@@ -1255,25 +1250,43 @@ function Choice<T extends string>({
   );
 }
 
+const LOADING_LINES = [
+  "Reading the deck.",
+  "Keeping every slide.",
+  "Setting the title.",
+  "Drawing the figures.",
+  "Lining up the charts.",
+  "Opening the deck.",
+];
+
 function Home({
   files,
   addFiles,
   clearFile,
   issue,
   busy,
-  busyLabel,
 }: {
   files: Held[];
   addFiles: (files: File[]) => void;
   clearFile: () => void;
   issue: string | null;
   busy: boolean;
-  busyLabel: string;
 }) {
   const [over, setOver] = useState(false);
   const [beat, setBeat] = useState(0);
   const [paused, setPaused] = useState(false);
+  const [loadingLine, setLoadingLine] = useState(0);
   const reduced = useRef(false);
+  useEffect(() => {
+    if (!busy) {
+      setLoadingLine(0);
+      return;
+    }
+    const timer = window.setInterval(() => {
+      setLoadingLine((current) => (current + 1) % LOADING_LINES.length);
+    }, 900);
+    return () => window.clearInterval(timer);
+  }, [busy]);
   useEffect(() => {
     reduced.current = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   }, []);
@@ -1284,6 +1297,7 @@ function Home({
   }, [beat, paused]);
   return (
     <div className="home">
+      {busy ? <div className="home-dim" /> : null}
       <header className="home-bar">
         <div className="brand">
           <span className="mark" aria-hidden />
@@ -1342,8 +1356,8 @@ function Home({
                   <path d="M4 20h16" />
                 </svg>
               </span>
-              <strong>{busy ? busyLabel : "Drop a PowerPoint here"}</strong>
-              <span>{busy ? (busyLabel === "Choosing the layout" ? "Deciding what stays and what changes." : "Every slide is kept.") : "Click to upload. Every slide is kept."}</span>
+              <strong>{busy ? "Loading" : "Drop a PowerPoint here"}</strong>
+              <span>{busy ? "Every slide is kept." : "Click to upload. Every slide is kept."}</span>
             </label>
             {files.length > 0 && (
               <ul className="held">
@@ -1360,23 +1374,22 @@ function Home({
             )}
             {issue && <p className="home-issue">{issue}</p>}
             {busy ? (
-              <button className="home-start" type="submit" disabled>
-                {busyLabel}
-              </button>
+              <div className="home-loading" role="status" aria-live="polite">
+                <p>Loading</p>
+                <ol>
+                  {LOADING_LINES.map((line, index) => (
+                    <li key={line} className={index === loadingLine ? "is-on" : ""}>
+                      {line}
+                    </li>
+                  ))}
+                </ol>
+              </div>
             ) : null}
           </form>
         </div>
         <HomePreview index={beat} onPause={setPaused} />
         <HomeBeats index={beat} onPick={setBeat} onPause={setPaused} />
       </main>
-      {busy ? (
-        <div className="home-loading" role="status" aria-live="polite">
-          <div>
-            <p>Loading</p>
-            <span>{busyLabel === "Choosing the layout" ? "Choosing the layout." : "Reading the deck."}</span>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

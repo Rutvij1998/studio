@@ -225,6 +225,8 @@ function stripPiece(piece: SlidePiece, lines: string[]): SlidePiece | null {
 
 function visible(slide: SourceSlide): boolean {
   if (slide.chart || slide.table || slide.images.length > 0) return true;
+  if (slide.title.trim()) return true;
+  if (slide.spoken?.trim()) return true;
   for (const piece of slide.pieces ?? []) {
     if (piece.kind === "prose" && piece.text.trim()) return true;
     if (piece.kind === "list" && (piece.title.trim() || piece.points.some((point) => point.trim()))) return true;

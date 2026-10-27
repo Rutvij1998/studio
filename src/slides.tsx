@@ -1912,8 +1912,9 @@ function OriginSheet({ slide }: { slide: SourceSlide }) {
   const lead = leadCopy(slide);
   const continued = isContinued(slide);
   const pictures = slide.images.length > 0;
+  const spokenOnly = Boolean(slide.spoken?.trim()) && !lead && bullets.length === 0 && !pictures;
   return (
-    <article className={`slide sheet${pictures ? " has-pictures" : ""}${bullets.length ? " has-list" : ""}`}>
+    <article className={`slide sheet${pictures ? " has-pictures" : ""}${bullets.length ? " has-list" : ""}${spokenOnly ? " is-spoken" : ""}`}>
       {continued ? <p className="kicker">Continued</p> : null}
       {slide.eyebrow ? <p className="eyebrow">{slide.eyebrow}</p> : null}
       {slide.title.trim() ? <h2 data-lines={slide.title.includes("\n") ? "" : undefined}>{slide.title.trim()}</h2> : null}

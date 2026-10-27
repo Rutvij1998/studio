@@ -43,7 +43,7 @@ These routes exist in the Vite dev server. They are not deployed with the public
 | Route | What it does |
 | --- | --- |
 | `POST /api/original` | Turns the uploaded file into slide images for Compare. Needs LibreOffice (`soffice`) and Python with PyMuPDF. |
-| `POST /api/direct` | Runs before the deck is shown. The model says which slides stay and which need a layout change. A chart, a table, a picture, and any number that was not already on the slide stay as they are. |
+| `POST /api/direct` | Local only, and not on the way to the first slide. The deck opens from the file. A chart, a table, a picture, and any number that was not already on the slide stay as they are. |
 | `POST /api/grade` | May rephrase a grade note. The letter stays the one computed in the app. |
 
 The server reads `XAI_API_KEY` from a gitignored env file. The key stays on the server. Without the key, the code layout and the grade letter still show.

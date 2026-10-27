@@ -2087,6 +2087,11 @@ function addNext(
 const CHART_COLORS = ["3200BE", "9A2F9A", "1F9E72", "5C6BC0"];
 const TRACK = "F3F0F8";
 
+function speak(slide: Slide, source: SourceSlide) {
+  const text = source.spoken?.trim();
+  if (text) slide.addNotes(text);
+}
+
 function addOrigin(pres: Pres, book: Book, index: number, type: (typeof SCALE)["m"]) {
   const source = book.sourceDeck?.slides.find((slide) => slide.index === index) ?? null;
   if (!source) return;
@@ -2104,6 +2109,7 @@ function addOrigin(pres: Pres, book: Book, index: number, type: (typeof SCALE)["
 
 function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const frame = pieceFrame(pieceFit(source));
   const size = frame.type;
@@ -2555,6 +2561,7 @@ function addOriginPieces(pres: Pres, source: SourceSlide, type: (typeof SCALE)["
 
 function addOriginCover(pres: Pres, book: Book, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: COVER };
   paintCoverWave(pres, slide);
   if (book.logo) placeMark(pres, slide, book.logo);
@@ -2603,10 +2610,12 @@ function addOriginCover(pres: Pres, book: Book, source: SourceSlide, type: (type
 
 function addOriginSheet(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const bullets = bulletLines(source);
   const continued = isContinued(source);
   const lead = leadCopy(source);
+  const spokenOnly = Boolean(source.spoken?.trim()) && !lead && bullets.length === 0 && source.images.length === 0;
   const images = source.images;
   let cursor = 0.46;
   if (continued) {
@@ -2622,14 +2631,14 @@ function addOriginSheet(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
   }
   if (source.title.trim()) {
     const titleLines = Math.max(1, source.title.trim().split("\n").length);
-    const titleH = titleLines > 1 ? 0.48 * titleLines : images.length ? 0.52 : 0.72;
+    const titleH = spokenOnly ? 1.5 : titleLines > 1 ? 0.48 * titleLines : images.length ? 0.52 : 0.72;
     slide.addText(source.title.trim(), {
       x: 0.7,
-      y: cursor,
+      y: spokenOnly ? 2.15 : cursor,
       w: 12,
       h: titleH,
       fontFace: "Calibri",
-      fontSize: titleLines > 1 ? Math.max(26, type.title - 8) : images.length ? Math.max(24, type.title - 12) : type.title - 2,
+      fontSize: spokenOnly ? 40 : titleLines > 1 ? Math.max(26, type.title - 8) : images.length ? Math.max(24, type.title - 12) : type.title - 2,
       bold: true,
       color: INK,
       margin: 0,
@@ -2681,6 +2690,7 @@ function addOriginSheet(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m
 
 function addOriginTable(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const table = tableFromSlide(source);
   const pictures = source.images.length > 0;
@@ -3171,6 +3181,7 @@ function drawColumns(pres: Pres, slide: Slide, chart: SourceChart, table: Source
 function addOriginChart(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const chart = source.chart as SourceChart;
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const mode = plotMode(chart);
   const eyebrow = chartEyebrow(chart);
@@ -3353,6 +3364,7 @@ function placeCopy(slide: Slide, text: string, x: number, y: number, w: number, 
 
 function addOriginNumbers(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"]) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const numbers = source.numbers.slice(0, 6);
   kicker(slide, numbers.length === 1 ? "Figure" : "Figures", 0.65, 0.38, "C23FC2", type.kicker);
@@ -3450,6 +3462,7 @@ function addOriginNumbers(pres: Pres, source: SourceSlide, type: (typeof SCALE)[
 
 function addOriginProse(pres: Pres, source: SourceSlide, type: (typeof SCALE)["m"], picture: boolean) {
   const slide = pres.addSlide();
+  speak(slide, source);
   slide.background = { color: WHITE };
   const images = source.images;
   const side = images.length > 0 && !picture;

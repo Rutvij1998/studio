@@ -159,6 +159,8 @@ export type SourceSlide = {
   pieces?: SlidePiece[];
   /** Why this slide was kept large, kept at reading size, or continued. */
   pace?: string;
+  /** The author's own words, kept for the presenter and left off the slide. */
+  spoken?: string;
   /** Chart, table, or both. Empty means both when the file has both. */
   show?: "chart" | "table" | "both";
   /** A layout the director chose. Empty means the code chooses. */

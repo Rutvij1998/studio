@@ -548,6 +548,47 @@ async function pace() {
 
 await pace();
 
+async function talk() {
+  const pres = new PptxGenJS();
+  pres.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  pres.layout = "DECK";
+  const cover = pres.addSlide();
+  cover.addText("Harbor claims", { x: 0.6, y: 2.2, w: 10, h: 0.8, fontSize: 32, fontFace: "Calibri" });
+  cover.addText("Mina Shah", { x: 0.6, y: 3.2, w: 10, h: 0.4, fontSize: 18, fontFace: "Calibri" });
+  const dense = pres.addSlide();
+  dense.addText("The queue is the problem", { x: 0.6, y: 0.4, w: 11, h: 0.5, fontSize: 28, fontFace: "Calibri" });
+  const paragraph = "The file waits five days because one team checks every photo by hand. A second review then starts from zero and the customer hears nothing until both people agree. One owner would close the file on the same day the photo arrives at the desk.";
+  dense.addText(paragraph, { x: 0.6, y: 1.3, w: 11, h: 2.4, fontSize: 16, fontFace: "Calibri" });
+  const read = await readSourceDeck(await pres.write({ outputType: "arraybuffer" }) as ArrayBuffer, "talk.pptx");
+  const slide = read.deck.slides.find((item) => item.title === "The queue is the problem");
+  expect("essay stays one slide", read.deck.slides.length, 2);
+  includes("point stays", `${slide?.title ?? ""} ${slide?.context ?? ""}`, "The file waits five days");
+  expect("essay leaves the slide", (slide?.context ?? "").includes("starts from zero"), false);
+  includes("notes keep the paragraph", slide?.spoken ?? "", "starts from zero");
+  includes("notes keep the close", slide?.spoken ?? "", "same day");
+  includes("notes were not rewritten", slide?.pace ?? "", "Nothing was rewritten");
+  const shown = `${slide?.title ?? ""}\n${slide?.context ?? ""}\n${(slide?.pieces ?? []).map((piece) => piece.kind === "prose" ? piece.text : "").join("\n")}`;
+  expect("later sentence stays off the slide", shown.includes("starts from zero"), false);
+
+  const parts = new PptxGenJS();
+  parts.defineLayout({ name: "DECK", width: 13.333, height: 7.5 });
+  parts.layout = "DECK";
+  const open = parts.addSlide();
+  open.addText("Lane plan", { x: 0.6, y: 2.2, w: 10, h: 0.6, fontSize: 32, fontFace: "Calibri" });
+  const split = parts.addSlide();
+  split.addText("What changes", { x: 0.6, y: 0.35, w: 11, h: 0.45, fontSize: 28, fontFace: "Calibri" });
+  split.addText("Green means the file is ready to ship. The retailer can send it the same day, the customer gets a text within the hour, and no second queue is opened for that photo.", { x: 0.6, y: 1.1, w: 11, h: 1.3, fontSize: 16, fontFace: "Calibri" });
+  split.addText("Amber means a person still has to look. The photo is unclear, the file goes back to the start, and the customer waits five more days for an answer.", { x: 0.6, y: 2.6, w: 11, h: 1.3, fontSize: 16, fontFace: "Calibri" });
+  const broken = await readSourceDeck(await parts.write({ outputType: "arraybuffer" }) as ArrayBuffer, "parts.pptx");
+  expect("two essays become two slides", broken.deck.slides.length, 3);
+  const second = broken.deck.slides[2];
+  expect("second headline is the point", second?.title, "Amber means a person still has to look.");
+  includes("second notes keep the wait", second?.spoken ?? "", "five more days");
+  expect("second slide does not repeat the wait", (second?.context ?? "").includes("five days"), false);
+}
+
+await talk();
+
 function blank(title: string, extra: Partial<SourceSlide> = {}): SourceSlide {
   return {
     index: 1,

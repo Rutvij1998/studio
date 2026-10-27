@@ -228,7 +228,9 @@ function intentOf(slides: SourceSlide[], title: string): string {
   const tail = next.length ? ` Then ${next.join(", ")}.` : "";
   const split = slides.filter((slide) => slide.pace?.includes("Split into")).length;
   const opened = split ? ` ${split} ${split === 1 ? "slide was" : "slides were"} split so each one stays readable.` : "";
-  return `Read ${bits.join(", ")}. Every slide is kept. Pictures stay on the slide. Charts are redrawn in the studio colors. A table of numbers is drawn as a chart, and the table stays. Lead: ${lead}.${tail}${opened}`;
+  const talked = slides.some((slide) => slide.spoken?.trim());
+  const notes = talked ? " Longer wording is in the speaker notes." : "";
+  return `Read ${bits.join(", ")}. Every slide is kept. Pictures stay on the slide. Charts are redrawn in the studio colors. A table of numbers is drawn as a chart, and the table stays. Lead: ${lead}.${tail}${opened}${notes}`;
 }
 
 export type SlideRole = "cover" | "chart" | "figures" | "pictures" | "bullets" | "prose";
@@ -1645,6 +1647,153 @@ function unpack(pieces: SlidePiece[]): SlidePiece[] {
   return out;
 }
 
+function flat(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function sameText(left: string, right: string): boolean {
+  return flat(left).toLowerCase() === flat(right).toLowerCase();
+}
+
+/** The first sentence. A decimal such as 18.5 is not a stop. */
+function firstSentence(text: string): string {
+  const clean = flat(text);
+  const match = clean.match(/^.+?(?:[.!?](?=\s|$)|$)/);
+  return (match?.[0] ?? clean).trim();
+}
+
+/** A paragraph with a point and more talk after it. One sentence stays on the slide. */
+function isEssay(text: string): boolean {
+  const clean = flat(text);
+  const rest = clean.slice(firstSentence(clean).length).trim();
+  return clean.length >= 140 && rest.length >= 80;
+}
+
+/** A complete short sentence that can sit under the headline. Empty when it would repeat the title. */
+function contextLine(title: string, text: string): string {
+  const clean = flat(text);
+  const first = firstSentence(clean);
+  const rest = clean.slice(first.length).trim();
+  if (rest.length < 40 || first.length < 8 || first.length > 90) return "";
+  if (sameText(first, title)) return "";
+  return first;
+}
+
+function joinSpoken(prior: string | undefined, blocks: string[]): string {
+  const body = blocks.map((block) => block.trim()).filter(Boolean).join("\n\n");
+  const notes = prior?.trim() ?? "";
+  if (!notes) return body;
+  if (!body) return notes;
+  if (notes.includes(body) || body.includes(notes)) return notes.length >= body.length ? notes : body;
+  return `${notes}\n\n${body}`;
+}
+
+function contextAfter(context: string, removed: string[], line: string): string {
+  const dropped = removed.map((block) => flat(block)).filter(Boolean);
+  const kept = context.split("\n").map((item) => item.trim()).filter(Boolean).filter((item) => {
+    const key = flat(item);
+    return !dropped.some((block) => key.length > 24 && block.includes(key));
+  });
+  if (line && !kept.some((item) => sameText(item, line))) kept.unshift(line);
+  return kept.join("\n");
+}
+
+/** Take a long paragraph off the slide. The point stays. The wording goes to the speaker notes. */
+function liftSpeech(slides: SourceSlide[]): SourceSlide[] {
+  const out: SourceSlide[] = [];
+  for (const slide of slides) {
+    if (slide.index === 1) {
+      out.push(slide);
+      continue;
+    }
+    const pieces = slide.pieces ?? [];
+    const essays = pieces.filter((piece): piece is { kind: "prose"; text: string } => piece.kind === "prose" && isEssay(piece.text));
+    const proseOnly = !slide.chart && !slide.table && pieces.length > 0 && pieces.every((piece) => piece.kind === "prose");
+    const headlines = essays.every((piece) => contextLine(" ", piece.text));
+    if (proseOnly && essays.length >= 2 && essays.length <= 4 && headlines) {
+      essays.forEach((piece, index) => {
+        const line = contextLine(index === 0 ? slide.title : "", piece.text);
+        const title = index === 0 ? slide.title : line || slide.title;
+        const shown = index === 0 && line && !sameText(line, title) ? line : "";
+        out.push({
+          ...slide,
+          title: title.slice(0, 140),
+          context: shown,
+          pieces: shown ? [{ kind: "prose", text: shown }] : undefined,
+          images: index === 0 ? slide.images : [],
+          numbers: index === 0 ? slide.numbers : [],
+          spoken: joinSpoken(index === 0 ? slide.spoken : "", [piece.text]),
+          pace: index === 0
+            ? `Split into ${essays.length} slides. The rest is in the speaker notes. Nothing was rewritten.`
+            : "The rest is in the speaker notes. Nothing was rewritten.",
+        });
+      });
+      const spare = pieces.filter((piece) => !(piece.kind === "prose" && isEssay(piece.text)));
+      if (spare.length && out.length) {
+        const first = out[out.length - essays.length];
+        if (first) {
+          first.pieces = [...(first.pieces ?? []), ...spare];
+          first.context = [first.context, ...spare.map((piece) => piece.kind === "prose" ? piece.text : "")].filter(Boolean).join("\n");
+        }
+      }
+      continue;
+    }
+    const removed: string[] = [];
+    const nextPieces = pieces.flatMap((piece): SlidePiece[] => {
+      if (piece.kind === "prose" && isEssay(piece.text)) {
+        removed.push(piece.text);
+        const line = contextLine(slide.title, piece.text);
+        return line ? [{ kind: "prose" as const, text: line }] : [];
+      }
+      if (piece.kind === "card" && isEssay(piece.detail)) {
+        removed.push(piece.detail);
+        return [{ ...piece, detail: contextLine(piece.title, piece.detail) }];
+      }
+      if (piece.kind === "list") {
+        let changed = false;
+        const points = piece.points.flatMap((point) => {
+          if (!isEssay(point)) return [point];
+          changed = true;
+          removed.push(point);
+          const line = contextLine(piece.title || slide.title, point);
+          return line ? [line] : [];
+        });
+        if (!changed) return [piece];
+        if (!piece.title.trim() && points.length === 0) return [];
+        return [{ ...piece, points }];
+      }
+      return [piece];
+    });
+    if (!removed.length && isEssay(slide.context) && pieces.length === 0) removed.push(slide.context);
+    if (!removed.length) {
+      out.push(slide);
+      continue;
+    }
+    const line = nextPieces.find((piece) => piece.kind === "prose")?.text ?? "";
+    out.push({
+      ...slide,
+      context: contextAfter(slide.context, removed, line && !sameText(line, slide.title) ? line : ""),
+      pieces: nextPieces.length ? nextPieces : undefined,
+      spoken: joinSpoken(slide.spoken, removed),
+      pace: slide.pace || "The rest is in the speaker notes. Nothing was rewritten.",
+    });
+  }
+  return reindex(out);
+}
+
+async function fileNotes(zip: JSZip, slideName: string, rels: string): Promise<string> {
+  const rel = [...rels.matchAll(/<Relationship\b[^>]*>/g)].find((tag) => /\/notesSlide$/i.test(attr(tag[0], "Type")));
+  const target = rel ? attr(rel[0], "Target") : "";
+  if (!target) return "";
+  const xml = await zip.file(resolvePath(slideName, target))?.async("string");
+  if (!xml) return "";
+  return textsOf(xml, true, false)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^\d+$/.test(line))
+    .join("\n");
+}
+
 /** A slide that cannot fit on one canvas continues on the next one. */
 function spreadPieces(slides: SourceSlide[]): SourceSlide[] {
   const out: SourceSlide[] = [];
@@ -1739,6 +1888,8 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     const pieces = piecesOf(groups);
     const context = groups.filter((group) => !/^\d{1,2}$/.test(group)).join("\n").replace(/\n{3,}/g, "\n\n").trim();
     const images = await imagesOn(zip, rels ?? "", xml);
+    const fromFile = rels ? await fileNotes(zip, name, rels) : "";
+    const spoken = fromFile.length >= 40 && fromFile.replace(/\s+/g, " ").trim().toLowerCase() !== title.replace(/\s+/g, " ").trim().toLowerCase() ? fromFile : "";
     markedPicture.push(/<p:pic\b/.test(xml));
     slides.push({
       index: slides.length + 1,
@@ -1752,6 +1903,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
       images,
       table,
       pieces,
+      spoken: spoken || undefined,
     });
   }
   const footer = runningFooter(slides);
@@ -1771,7 +1923,7 @@ export async function readSourceDeck(buffer: ArrayBuffer, fileName = ""): Promis
     const textLen = `${slide.title} ${slide.context}`.trim().length;
     slide.picture = (slide.images.length > 0 || markedPicture[index] === true) && textLen < 12 && !slide.chart && slide.numbers.length === 0;
   });
-  const shaped = markPace(spreadPieces(spreadPictures(headlinePass(titlePass(slides)))));
+  const shaped = markPace(spreadPieces(spreadPictures(liftSpeech(headlinePass(titlePass(slides))))));
   const title = shaped.find((slide) => slide.title.trim())?.title.trim() || fileTitle(fileName);
   const deck: SourceDeck = { title: title.slice(0, 80), intent: "", slides: shaped };
   deck.intent = shaped.length ? intentOf(shaped, deck.title) : "";
@@ -2222,6 +2374,7 @@ export function mergeSlides(slides: SourceSlide[], index: number): SlideEdit {
     extraCharts: left.extraCharts + right.extraCharts,
     picture: images.length > 0 && `${left.title} ${context}`.trim().length < 12 && !chart && left.numbers.length + right.numbers.length === 0,
     show: left.show ?? right.show,
+    spoken: [left.spoken, right.spoken].map((item) => item?.trim()).filter(Boolean).join("\n\n") || undefined,
     pace: undefined,
   });
   const shaped = reshape(merged);
